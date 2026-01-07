@@ -30,7 +30,7 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN); // IMPORTANT: NO polling
 const notion = new NotionClient({ auth: NOTION_TOKEN });
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const gemini = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+const gemini = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // A "secret" webhook path to reduce random hits
 const secretPath = `/telegram/${TELEGRAM_BOT_TOKEN}`;
