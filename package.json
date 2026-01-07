@@ -13,6 +13,6 @@
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
     "@notionhq/client": "^2.2.15",
-    "@google/generative-ai": "^0.21.0"
+    "openai": "^4.24.1"
   }
 }
