@@ -47,12 +47,31 @@ slimbot.on('message', async (message) => {
   }
 });
 
-// Vor dem Starten sicherstellen, dass kein Webhook aktiv ist
-slimbot.deleteWebhook().then(() => {
-  console.log("Alte Webhooks gelöscht. Starte Polling...");
-  slimbot.startPolling((err, update) => {
-    if (err) {
-      console.error("Polling Error 409? Warte kurz...", err);
-    }
-  });
-});
+// --- NEUER START-BLOCK GEGEN 409 FEHLER ---
+
+const start = async () => {
+  try {
+    console.log("ERZWINGE RESET...");
+    // 1. Webhook mit Gewalt löschen und alle alten Nachrichten ignorieren
+    await slimbot.deleteWebhook({ drop_pending_updates: true });
+    
+    // 2. 15 Sekunden warten, damit Render Zeit hat, den alten Prozess zu stoppen
+    console.log("Warte 15 Sekunden auf Telegram Sync, damit der alte Prozess stirbt...");
+    setTimeout(() => {
+      console.log("BOT GEHT JETZT LIVE.");
+      slimbot.startPolling((err) => {
+        if (err) {
+          // Falls doch noch ein 409 kommt, versuchen wir es nach 10s einfach nochmal automatisch
+          console.error("Konflikt (409) erkannt. Starte automatischen Retry in 10s...");
+          setTimeout(start, 10000);
+        }
+      });
+    }, 15000);
+  } catch (err) {
+    console.error("Start-Fehler:", err);
+    // Bei Fehlern beim Löschen des Webhooks auch neu versuchen
+    setTimeout(start, 10000);
+  }
+};
+
+start();
