@@ -2,15 +2,12 @@
   "name": "ar-assistant-bot",
   "version": "1.0.0",
   "main": "index.js",
-  "type": "commonjs",
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "@google/generative-ai": "^0.1.0",
+    "slimbot": "^1.0.35"
+  },
   "scripts": {
     "start": "node index.js"
-  },
-  "dependencies": {
-    "node-telegram-bot-api": "^0.66.0",
-    "openai": "^4.0.0"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }
