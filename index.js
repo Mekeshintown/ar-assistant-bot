@@ -13,8 +13,8 @@ const PORT = process.env.PORT || 3000;
 
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
-const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0";
-const DB_PUBLISHING = "2e0c841ccef9804b8d82ecee5f0c2df0";
+const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0";
+const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 
 const app = express();
 app.use(express.json());
