@@ -47,4 +47,12 @@ slimbot.on('message', async (message) => {
   }
 });
 
-slimbot.startPolling();
+// Vor dem Starten sicherstellen, dass kein Webhook aktiv ist
+slimbot.deleteWebhook().then(() => {
+  console.log("Alte Webhooks gelöscht. Starte Polling...");
+  slimbot.startPolling((err, update) => {
+    if (err) {
+      console.error("Polling Error 409? Warte kurz...", err);
+    }
+  });
+});
