@@ -3,8 +3,11 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Slimbot = require('slimbot');
 const http = require('http');
 
-// 1. Port-Fix für Render (Hält den Service live)
-http.createServer((req, res) => { res.writeHead(200); res.end('Bot Online'); }).listen(process.env.PORT || 3000);
+// Render Port Fix
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('A&R Bot Online');
+}).listen(process.env.PORT || 3000);
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -14,45 +17,61 @@ async function getNotionData(databaseId) {
   try {
     const response = await notion.databases.query({ database_id: databaseId });
     return response.results.map(page => {
-      const p = page.properties;
-      return {
-        Task: p.Aufgabe?.title?.[0]?.plain_text || "Info",
-        Instruction: p.Anweisung?.rich_text?.[0]?.plain_text || ""
-      };
+      const props = page.properties;
+      let entry = {};
+      for (const key in props) {
+        const val = props[key];
+        if (val.title) entry[key] = val.title[0]?.plain_text;
+        else if (val.rich_text) entry[key] = val.rich_text[0]?.plain_text;
+        else if (val.select) entry[key] = val.select.name;
+      }
+      return entry;
     });
   } catch (e) { return []; }
 }
 
 slimbot.on('message', async (message) => {
   if (!message.text) return;
-  try {
-    // Hol die Daten aus deinen Tabellen (IDs aus deinen Screenshots)
-    const config = await getNotionData('2e1c841ccef980708df2ecee5f0c2df0');
-    const studios = await getNotionData('2e0c841ccef980b49c4aefb4982294f0');
-    const bios = await getNotionData('2e0c841ccef9807e9b73c9666ce4fcb0');
+  const chatId = message.chat.id;
 
-    // WICHTIG: Korrekte Modell-Initialisierung
+  try {
+    // 1. Daten laden
+    const [config, studios, bios] = await Promise.all([
+      getNotionData('2e1c841ccef980708df2ecee5f0c2df0'),
+      getNotionData('2e0c841ccef980b49c4aefb4982294f0'),
+      getNotionData('2e0c841ccef9807e9b73c9666ce4fcb0')
+    ]);
+
+    // 2. Gemini stabil aufrufen
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const systemPrompt = `Du bist der L'Agentur A&R Bot. Ton: Music Industry Casual. 
-    Hier sind deine Regeln und Daten: ${JSON.stringify({config, studios, bios})}.
-    Antworte locker auf: ${message.text}`;
+    // 3. Prompt ohne "Digger"-Zwang
+    const systemInstruction = `
+      Du bist der A&R Assistent der L'Agentur. 
+      Dein Tonfall ist professionell, aber entspannt (Music Business Style). 
+      Nutze diese Daten für deine Antwort:
+      - Strategie/Regeln: ${JSON.stringify(config)}
+      - Studio-Infos: ${JSON.stringify(studios)}
+      - Artist-Bios: ${JSON.stringify(bios)}
+      
+      Wenn du eine Info nicht hast, sag es höflich.
+    `;
 
-    const result = await model.generateContent(systemPrompt);
-    slimbot.sendMessage(message.chat.id, result.response.text());
-  } catch (err) {
-    console.error("KI Fehler:", err.message);
-    slimbot.sendMessage(message.chat.id, "Digger, die KI hat gerade Schluckauf. Probier's nochmal.");
+    const result = await model.generateContent(systemInstruction + "\n\nAnfrage: " + message.text);
+    slimbot.sendMessage(chatId, result.response.text());
+
+  } catch (error) {
+    console.error("Fehler:", error);
+    slimbot.sendMessage(chatId, "Entschuldige, ich konnte die Daten gerade nicht abrufen.");
   }
 });
 
-// 2. Der 409-Killer: Versucht es bei Konflikt einfach automatisch neu
+// 4. Start-Logik mit Konflikt-Lösung
 const start = async () => {
   try {
     await slimbot.deleteWebhook({ drop_pending_updates: true });
     slimbot.startPolling((err) => {
       if (err && err.includes('409')) {
-        console.log("Alt-Prozess blockiert noch. Neustart in 10s...");
         setTimeout(start, 10000);
       }
     });
