@@ -11,9 +11,10 @@ const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
+// DEINE KORREKTEN IDs (Check: Publishing ID ist jetzt die richtige)
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
-const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0";
+const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0"; 
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 
 const app = express();
@@ -43,13 +44,17 @@ async function fetchFullDatabase(databaseId) {
   try {
     const response = await notion.databases.query({ database_id: databaseId });
     return response.results.map(page => parseProperties(page.properties));
-  } catch (e) { return []; }
+  } catch (e) {
+    console.error("Fehler bei DB:", databaseId, e.message);
+    return [];
+  }
 }
 
 bot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
   try {
+    // Wir holen alle Daten gleichzeitig
     const [config, studios, bios, publishing] = await Promise.all([
       fetchFullDatabase(DB_CONFIG),
       fetchFullDatabase(DB_STUDIOS),
@@ -58,19 +63,19 @@ bot.on("message", async (msg) => {
     ]);
 
     const systemPrompt = `
-      Du bist der A&R Assistent der L'Agentur. 
-      DEIN TONFALL: Sachlich, professionell und direkt. Vermeide Jugendsprache oder übertrieben lockere Sprüche.
+      Du bist der A&R Assistent. Antworte sachlich und professionell.
       
-      DEIN WISSEN:
+      DATEN AUS NOTION:
       - Studios: ${JSON.stringify(studios)}
       - Artist Bios: ${JSON.stringify(bios)}
       - Publishing/IPI: ${JSON.stringify(publishing)}
-      - Config: ${JSON.stringify(config)}
+      - Config/Regeln: ${JSON.stringify(config)}
 
-      AUFGABE:
-      - Beantworte Fragen basierend auf den Notion-Daten.
-      - Wenn Infos fehlen, nenne dies sachlich mit [INFO FEHLT].
-      - Erstelle professionelle Session-Zusammenfassungen oder Infos.
+      REGELN:
+      1. Suche in ALLEN Tabellen nach dem Künstlernamen.
+      2. Wenn du Infos in "Artist Bios" findest, nenne Bio Long und die Links.
+      3. Wenn du Infos in "Publishing" findest, nenne IPI und PRO.
+      4. Nutze für Studio-Anfragen Address, Bell und Default Contact.
     `;
 
     const completion = await openai.chat.completions.create({
@@ -78,17 +83,14 @@ bot.on("message", async (msg) => {
       messages: [{ role: "system", content: systemPrompt }, { role: "user", content: msg.text }]
     });
 
-    await bot.sendMessage(msg.chat.id, completion.choices[0].message.content, { parse_mode: "Markdown" });
+    await bot.sendMessage(msg.chat.id, completion.choices[0].message.content);
   } catch (err) {
-    await bot.sendMessage(msg.chat.id, "Ein technischer Fehler ist aufgetreten.");
+    await bot.sendMessage(msg.chat.id, "Technischer Fehler beim Datenbank-Check.");
   }
 });
 
 app.post(secretPath, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
-app.get("/", (req, res) => res.send("Bot Online"));
-
 app.listen(PORT, async () => {
   await bot.deleteWebHook({ drop_pending_updates: true });
   await bot.setWebHook(`${WEBHOOK_URL}${secretPath}`);
-  console.log("Bot einsatzbereit.");
 });
