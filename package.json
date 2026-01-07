@@ -1,13 +1,18 @@
 {
   "name": "ar-assistant-bot",
   "version": "1.0.0",
+  "description": "Telegram A&R Assistant (Webhook, Render)",
   "main": "index.js",
-  "dependencies": {
-    "@notionhq/client": "*",
-    "@google/generative-ai": "*",
-    "slimbot": "*"
-  },
   "scripts": {
     "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "@notionhq/client": "^2.2.15",
+    "@google/generative-ai": "^0.21.0"
   }
 }
