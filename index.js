@@ -11,7 +11,7 @@ const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-// DEINE DEFINITIVEN IDs
+// DEINE STRUKTUR GEMÄSS SCREENSHOTS
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0";
@@ -26,7 +26,7 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const secretPath = `/telegram/${TELEGRAM_BOT_TOKEN}`;
 
-// Hilfsfunktion für saubere Datenextraktion
+// Universal-Parser für deine Notion-Spalten
 function parseProperties(properties) {
   let data = {};
   for (const key in properties) {
@@ -41,18 +41,9 @@ function parseProperties(properties) {
   return data;
 }
 
-// ZIEHT GEZIELT INFOS AUS NOTION
-async function queryNotion(databaseId, searchText) {
+async function fetchFullDatabase(databaseId) {
   try {
-    const response = await notion.databases.query({
-      database_id: databaseId,
-      filter: {
-        or: [
-          { property: "Name", title: { contains: searchText } },
-          { property: "Name", title: { contains: searchText.toLowerCase() } }
-        ]
-      }
-    });
+    const response = await notion.databases.query({ database_id: databaseId });
     return response.results.map(page => parseProperties(page.properties));
   } catch (e) { return []; }
 }
@@ -61,26 +52,28 @@ bot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
   try {
-    // 1. Wir suchen in allen 4 DBs nach dem Stichwort aus der Nachricht
-    const searchTerm = msg.text.split(" ").pop(); // Nimmt meistens den Namen am Ende
+    // Lädt ALLES aus Notion für vollen Kontext
     const [config, studios, bios, publishing] = await Promise.all([
-      queryNotion(DB_CONFIG, searchTerm),
-      queryNotion(DB_STUDIOS, searchTerm),
-      queryNotion(DB_BIOS, searchTerm),
-      queryNotion(DB_PUBLISHING, searchTerm)
+      fetchFullDatabase(DB_CONFIG),
+      fetchFullDatabase(DB_STUDIOS),
+      fetchFullDatabase(DB_BIOS),
+      fetchFullDatabase(DB_PUBLISHING)
     ]);
 
-    // 2. GPT bekommt nur die relevanten Treffer
     const systemPrompt = `
-      Du bist der A&R Assistent. Antworte professionell und präzise.
-      GEFUNDENE DATEN:
-      Konfiguration: ${JSON.stringify(config)}
-      Studios: ${JSON.stringify(studios)}
-      Bios: ${JSON.stringify(bios)}
-      IPI/Publishing: ${JSON.stringify(publishing)}
+      Du bist der A&R Assistent der L'Agentur. Antworte sachlich, professionell und normal (nicht hipp).
+      
+      DEIN WISSEN:
+      - Artist Bios & Links: ${JSON.stringify(bios)}
+      - Publishing & IPI: ${JSON.stringify(publishing)}
+      - Studios (Address, Bell, Contact): ${JSON.stringify(studios)}
+      - Regeln & Templates: ${JSON.stringify(config)}
 
-      REGEL: Nutze die Daten oben. Wenn du eine IPI findest, nenne sie. Wenn du eine Bio findest, nenne sie. 
-      Erfinde nichts. Falls Daten fehlen, frage höflich nach.
+      ANWEISUNG:
+      1. Suche in ALLEN Daten nach Treffern für die Anfrage. 
+      2. Verknüpfe Infos: Wenn jemand nach "FAST BOY" fragt, schau in Bios UND Publishing (Lucas/Felix Hain).
+      3. Gib IPIs, Publisher und Bio-Texte präzise aus.
+      4. Falls Info wirklich fehlt, sag sachlich [INFO FEHLT].
     `;
 
     const completion = await openai.chat.completions.create({
@@ -90,7 +83,7 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(msg.chat.id, completion.choices[0].message.content);
   } catch (err) {
-    await bot.sendMessage(msg.chat.id, "Konnte die Anfrage gerade nicht verarbeiten.");
+    await bot.sendMessage(msg.chat.id, "Fehler beim Datenbank-Abgleich.");
   }
 });
 
