@@ -1,3 +1,6 @@
+// Render Port Fix
+require('http').createServer((req, res) => res.end('Bot is running')).listen(process.env.PORT || 3000);
+
 const { Client } = require('@notionhq/client');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Slimbot = require('slimbot');
