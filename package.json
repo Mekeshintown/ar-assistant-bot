@@ -5,7 +5,7 @@
   "dependencies": {
     "@notionhq/client": "^2.2.15",
     "@google/generative-ai": "^0.1.0",
-    "slimbot": "^1.0.35"
+    "slimbot": "^1.0.30"
   },
   "scripts": {
     "start": "node index.js"
