@@ -3,10 +3,10 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Slimbot = require('slimbot');
 const http = require('http');
 
-// Port-Fix für Render
+// 1. Render Health Check (Hält den Paid Service am Leben)
 http.createServer((req, res) => {
   res.writeHead(200);
-  res.end('A&R Bot Online');
+  res.end('A&R Bot is online');
 }).listen(process.env.PORT || 3000);
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
@@ -15,56 +15,61 @@ const slimbot = new Slimbot(process.env.TELEGRAM_BOT_TOKEN);
 
 async function getNotionData(databaseId) {
   try {
-    // Korrigierter Aufruf für die Notion Library
     const response = await notion.databases.query({ database_id: databaseId });
     return response.results.map(page => {
-      const props = page.properties;
-      const data = {};
-      for (const key in props) {
-        if (props[key].title) data[key] = props[key].title[0]?.plain_text;
-        else if (props[key].rich_text) data[key] = props[key].rich_text[0]?.plain_text;
-      }
-      return data;
+      const p = page.properties;
+      return {
+        Name: p.Name?.title?.[0]?.plain_text || p.Artist?.rich_text?.[0]?.plain_text || "Unbekannt",
+        Details: p.Bio?.rich_text?.[0]?.plain_text || p.Details?.rich_text?.[0]?.plain_text || ""
+      };
     });
-  } catch (e) {
-    console.error(`Notion Error (${databaseId}):`, e.message);
-    return [];
-  }
+  } catch (e) { return []; }
 }
 
 slimbot.on('message', async (message) => {
-  if (!message.text) return;
-  const chatId = message.chat.id;
-
+  if (!message || !message.text) return;
   try {
-    const config = await getNotionData('2e1c841ccef980708df2ecee5f0c2df0');
-    const studios = await getNotionData('2e0c841ccef980b49c4aefb4982294f0');
-    const bios = await getNotionData('2e0c841ccef9807e9b73c9666ce4fcb0');
+    const [config, studios, bios] = await Promise.all([
+      getNotionData('2e1c841ccef980708df2ecee5f0c2df0'),
+      getNotionData('2e0c841ccef980b49c4aefb4982294f0'),
+      getNotionData('2e0c841ccef9807e9b73c9666ce4fcb0')
+    ]);
 
-    // Korrigierter Modell-Name
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
-
-    const prompt = `
-      Du bist der L'Agentur A&R Bot. Ton: Music Industry Casual.
-      Kontext aus Notion:
-      Regeln: ${JSON.stringify(config)}
-      Studios: ${JSON.stringify(studios)}
-      Artist-Bios: ${JSON.stringify(bios)}
-      
-      Nutzer fragt: ${message.text}
-    `;
-
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `Du bist der L'Agentur A&R Bot. Ton: Music Industry Casual. Daten: ${JSON.stringify({config, studios, bios})}. Frage: ${message.text}`;
+    
     const result = await model.generateContent(prompt);
-    slimbot.sendMessage(chatId, result.response.text());
+    slimbot.sendMessage(message.chat.id, result.response.text());
+  } catch (err) { console.error("Fehler bei Nachricht:", err.message); }
+});
 
-  } catch (error) {
-    console.error("Fehler:", error);
-    slimbot.sendMessage(chatId, "Sorry, die KI oder Notion hängen gerade kurz.");
+// 2. DER ULTIMATIVE 409-STOPPER
+const startWithRetry = async () => {
+  console.log("--- START-SEQUENZ AKTIVIERT ---");
+  try {
+    // Erzwingt das Ende aller alten Verbindungen
+    await slimbot.deleteWebhook({ drop_pending_updates: true });
+    console.log("Leitung zu Telegram bereinigt...");
+    
+    // Kurze Pause, damit Render den alten Prozess stoppen kann
+    setTimeout(() => {
+      console.log("Polling wird jetzt gestartet...");
+      slimbot.startPolling((err) => {
+        if (err) {
+          console.log("Konflikt (409) erkannt. Ich kille die alte Session und starte in 10s neu...");
+          setTimeout(startWithRetry, 10000);
+        }
+      });
+    }, 5000);
+  } catch (e) {
+    console.log("Fehler beim Start, neuer Versuch in 10s...");
+    setTimeout(startWithRetry, 10000);
   }
+};
+
+// Verhindert, dass der Bot bei einem Fehler komplett abstürzt
+process.on('unhandledRejection', (reason) => {
+  console.log('Abgefangener Background-Fehler:', reason.message || reason);
 });
 
-// Start ohne 409 Risiko
-slimbot.deleteWebhook({ drop_pending_updates: true }).then(() => {
-  console.log("System bereit. Polling startet...");
-  slimbot.startPolling();
-});
+startWithRetry();
