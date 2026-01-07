@@ -1,124 +1,50 @@
-const http = require("http");
-const TelegramBot = require("node-telegram-bot-api");
-const OpenAI = require("openai");
-const BRAIN_PROMPT = `
-You are a personal A&R assistant for a music/management agency, used via Telegram (text & voice).
+const { Client } = require('@notionhq/client');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Slimbot = require('slimbot');
 
-Language handling:
-- If the user's message is clearly German, reply in German.
-- If the user's message is clearly English, reply in English.
-- Only ask "Deutsch oder Englisch?" if the message is genuinely language-ambiguous.
-- Never ask about language more than once per conversation.
+// 1. Initialisierung der Schnittstellen
+const notion = new Client({ auth: process.env.NOTION_TOKEN });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const slimbot = new Slimbot(process.env.TELEGRAM_BOT_TOKEN);
 
+// Hilfsfunktion: Daten aus Notion laden
+async function getNotionData(databaseId) {
+  const response = await notion.databases.query({ database_id: databaseId });
+  return response.results.map(page => page.properties);
+}
 
-Hard rules:
-- Never invent or guess data.
-- If something is ambiguous or missing, ask exactly ONE short follow-up question.
-- Default is read-only. Only write/change after explicit confirmation.
-- Never mix Airtable tables (Artist Pitch vs Label Pitch).
-- Output must be concise and copy-paste-ready. No emojis. No fluff.
-
-Data sources (read-only unless explicitly confirmed otherwise):
-Airtable:
-- Artist Pitch: Artist_Name, Contact_FirstName, Contact_LastName, Email, Genre, Prio
-- Label Pitch: Contact_FirstName, Contact_LastName, Label_Name, Email, Type, Prio
-
-Notion:
-- Artist Bios: Name, Bio Long, Bio Short, Spotify, Instagram, TikTok, Demos, Cuts, Songwriter Page
-- Publishing Infos: Name (person), IPI, Publisher, PRO
-- Studios: Name, Address, Bell, Default Contact
-
-DISCO:
-- You may search tracks, resolve versions, and output DISCO links.
-- You may NOT upload/edit, generate Spotify links, or guess.
-- If multiple versions match, ask ONE question.
-
-Decision logic:
-- Bio/publishing/studio → Notion
-- Pitch/emails/contacts → Airtable
-- Track/version/DISCO link → DISCO
-- Strategy/opinion → reasoning only (no tools)
-Live facts (charts/current numbers/news): do not guess; say you need web/source access.
-
-Output format:
-- 1 short title line
-- bullet list
-- if emails: add "Emails: ..." as comma-separated list
-`.trim();
-
-
-
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-const PORT = process.env.PORT || 3000;
-
-if (!TELEGRAM_BOT_TOKEN) throw new Error("Missing TELEGRAM_BOT_TOKEN");
-if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
-if (!WEBHOOK_URL) throw new Error("Missing WEBHOOK_URL");
-
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN); // ✅ Webhook (kein polling)
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-
-// Ein “geheimer” Pfad, damit nicht jeder dein Webhook-Endpoint raten kann
-const secretPath = `/telegram/${TELEGRAM_BOT_TOKEN}`;
-
-// HTTP Server für Render + Telegram Webhook
-const server = http.createServer((req, res) => {
-  // Telegram schickt Updates als POST an unseren secretPath
-  if (req.method === "POST" && req.url === secretPath) {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      try {
-        const update = JSON.parse(body);
-        bot.processUpdate(update);
-      } catch (e) {
-        console.error("Bad webhook payload:", e);
-      }
-      res.writeHead(200);
-      res.end("OK");
-    });
-    return;
-  }
-
-  // Healthcheck Endpoint für Render
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("OK");
-});
-
-server.listen(PORT, async () => {
-  console.log("HTTP server listening on", PORT);
-
-  // Webhook setzen/überschreiben (kickt Polling komplett raus)
-  const hookUrl = `${WEBHOOK_URL}${secretPath}`;
-  await bot.setWebHook(hookUrl);
-  console.log("Webhook set to", hookUrl);
-});
-
-// --- Bot Logik ---
-bot.onText(/^\/start$/, (msg) => {
-  bot.sendMessage(msg.chat.id, "Hallo! Wie kann ich dir als persönlicher A&R-Assistent heute helfen?");
-});
-
-bot.on("message", async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  if (!text || text.startsWith("/")) return;
+slimbot.on('message', async (message) => {
+  const chatId = message.chat.id;
+  const userInput = message.text;
 
   try {
-    const resp = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        { role: "system", content: BRAIN_PROMPT },
-        { role: "user", content: text },
-      ],
-    });
+    // 2. Daten live aus deinen Notion-IDs ziehen
+    const config = await getNotionData('2e1c841ccef980708df2ecee5f0c2df0');
+    const studios = await getNotionData('2e0c841ccef980b49c4aefb4982294f0');
+    const bios = await getNotionData('2e0c841ccef9807e9b73c9666ce4fcb0');
 
-    const answer = (resp.output_text || "").trim() || "Keine Antwort erhalten.";
-    await bot.sendMessage(chatId, answer);
-  } catch (e) {
-    console.error("OpenAI error:", e?.response?.data || e);
-    await bot.sendMessage(chatId, "Fehler. Check Render Logs.");
+    // 3. Den Kontext für die KI zusammenbauen (Brain Prompt)
+    const systemInstruction = `
+      Du bist der L'Agentur A&R Bot. Dein Ton: Music Industry Casual.
+      Regeln aus Notion: ${JSON.stringify(config)}
+      Studio-Daten: ${JSON.stringify(studios)}
+      Artist-Bios: ${JSON.stringify(bios)}
+      
+      Aufgabe: Antworte präzise auf Basis dieser Daten. Wenn Infos fehlen, schreibe [INFO FEHLT].
+    `;
+
+    // 4. KI-Antwort generieren (Gemini 1.5 Flash für Speed)
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", systemInstruction });
+    const result = await model.generateContent(userInput);
+    const responseText = result.response.text();
+
+    // 5. Antwort an Telegram senden
+    slimbot.sendMessage(chatId, responseText);
+
+  } catch (error) {
+    console.error("Fehler:", error);
+    slimbot.sendMessage(chatId, "Digger, da gabs ein Problem mit der Verbindung zu Notion.");
   }
 });
+
+slimbot.startPolling();
