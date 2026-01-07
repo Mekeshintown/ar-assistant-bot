@@ -1,5 +1,14 @@
 const TelegramBot = require("node-telegram-bot-api");
 const OpenAI = require("openai");
+const http = require("http");
+
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("OK");
+}).listen(PORT, () => {
+  console.log("HTTP server listening on", PORT);
+});
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
