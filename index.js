@@ -35,8 +35,11 @@ function parseProperties(properties) {
     let val = "";
     if (p.title) val = p.title[0]?.plain_text || "";
     else if (p.rich_text) val = p.rich_text[0]?.plain_text || "";
+    else if (p.phone_number) val = p.phone_number || ""; 
     else if (p.url) val = p.url || "";
     else if (p.select) val = p.select.name || "";
+    else if (p.email) val = p.email || "";
+    else if (p.number) val = p.number?.toString() || ""; // Falls du mal "Alter" als Zahl einträgst
     data[key] = val;
   }
   return data;
