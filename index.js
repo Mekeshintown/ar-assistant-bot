@@ -75,17 +75,18 @@ async function handleChat(chatId, text) {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
 
-  // Laden aller Daten
-  const [config, studios, bios, artistInfos, artistPitch, labelPitch] = await Promise.all([
+  // Laden aller Daten (Jetzt inkl. Publishing)
+  const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
     fetchSafely(DB_BIOS),
     fetchSafely(DB_ARTIST_INFOS),
     fetchAirtableData('Artist Pitch'),
-    fetchAirtableData('Label Pitch')
+    fetchAirtableData('Label Pitch'),
+    fetchSafely(DB_PUBLISHING) // Publishing wird jetzt mitgeladen
   ]);
 
- // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? ---
+  // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
   if (triggerWords.some(word => text.toLowerCase().includes(word))) {
     try {
@@ -107,10 +108,8 @@ async function handleChat(chatId, text) {
       const result = JSON.parse(extraction.choices[0].message.content);
       const tableName = result.table || (text.toLowerCase().includes("label") ? "Label Pitch" : "Artist Pitch");
       
-      // WICHTIG: Hier filtern wir die Felder nach Tabelle
       let finalFields = {};
       if (tableName === "Artist Pitch") {
-        // Nur Felder die in deiner Artist-Tabelle existieren
         if (result.Artist_Name) finalFields.Artist_Name = result.Artist_Name;
         if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
         if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
@@ -118,7 +117,6 @@ async function handleChat(chatId, text) {
         if (result.Genre) finalFields.Genre = result.Genre;
         if (result.Prio) finalFields.Prio = result.Prio;
       } else {
-        // Felder für die Label-Tabelle
         if (result.Label_Name) finalFields.Label_Name = result.Label_Name;
         if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
         if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
@@ -152,6 +150,7 @@ async function handleChat(chatId, text) {
     ${JSON.stringify(sonstigeRegeln)}
 
     ### WISSENSDATENBANK ###
+    - PUBLISHING (IPI Nummern, Verlage, Anteile): ${JSON.stringify(publishing)}
     - ARTIST PITCH (Emails/Prio/Genre): ${JSON.stringify(artistPitch)}
     - LABEL PITCH (A&Rs/Label): ${JSON.stringify(labelPitch)}
     - ARTIST INFOS: ${JSON.stringify(artistInfos)}
@@ -159,11 +158,12 @@ async function handleChat(chatId, text) {
     - STUDIOS: ${JSON.stringify(studios)}
 
     DEINE AUFGABEN:
-    1. Wenn nach Emails/Manager gefragt wird, schau in ARTIST PITCH. Nenne Vorname + Email.
-    2. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
-    3. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
-    4. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten und den Pitch_Rules aus der Config.
-    5. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.` 
+    1. Wenn nach IPI Nummern, Verlagen oder Song-Anteilen gefragt wird, schau zuerst in PUBLISHING.
+    2. Wenn nach Emails/Manager gefragt wird, schau in ARTIST PITCH. Nenne Vorname + Email.
+    3. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
+    4. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
+    5. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten und den Pitch_Rules aus der Config.
+    6. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.` 
   };
 
   const completion = await openai.chat.completions.create({
