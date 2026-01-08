@@ -6,27 +6,33 @@ const { Client: NotionClient } = require("@notionhq/client");
 const OpenAI = require("openai");
 const axios = require("axios");
 const fs = require("fs");
+const Airtable = require("airtable"); // NEU
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY; // NEU in Render/Environment
 const PORT = process.env.PORT || 3000;
 
-// DEINE VERIFIZIERTEN IDs
+// DEINE IDs
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0"; 
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
+const AIRTABLE_BASE_ID = "appF535cRZRho6btT"; // Deine Base ID
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const notion = new NotionClient({ auth: NOTION_TOKEN });
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID); // NEU
 
 const chatContext = new Map();
 const app = express();
 app.use(express.json());
+
+// --- HILFSFUNKTIONEN ---
 
 function parseProperties(properties) {
   let data = {};
@@ -39,7 +45,7 @@ function parseProperties(properties) {
     else if (p.url) val = p.url || "";
     else if (p.select) val = p.select.name || "";
     else if (p.email) val = p.email || "";
-    else if (p.number) val = p.number?.toString() || ""; // Falls du mal "Alter" als Zahl einträgst
+    else if (p.number) val = p.number?.toString() || "";
     data[key] = val;
   }
   return data;
@@ -52,40 +58,57 @@ async function fetchFullDatabase(id) {
   } catch (e) { return []; }
 }
 
+// Neue Hilfsfunktion für Airtable
+async function fetchAirtableData(tableName) {
+  try {
+    const records = await airtableBase(tableName).select().all();
+    return records.map(r => ({ id: r.id, ...r.fields }));
+  } catch (e) { 
+    console.log(`Airtable Fehler bei ${tableName}:`, e.message);
+    return []; 
+  }
+}
+
+// --- CORE LOGIK ---
+
 async function handleChat(chatId, text) {
-  // Wir laden die Daten einzeln, damit ein Fehler bei einer DB nicht alles stoppt
   const fetchSafely = async (id) => {
-    try {
-      return await fetchFullDatabase(id);
-    } catch (e) {
-      console.log(`Fehler bei ID ${id}:`, e.message);
-      return []; // Gibt leere Liste zurück statt abzustürzen
-    }
+    try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
 
-  const [config, studios, bios, publishing, artistInfos] = await Promise.all([
+  // Wir laden Notion UND Airtable parallel
+  const [config, studios, bios, artistInfos, artistPitch, labelPitch] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
     fetchSafely(DB_BIOS),
-    fetchSafely(DB_PUBLISHING),
-    fetchSafely(DB_ARTIST_INFOS)
+    fetchSafely(DB_ARTIST_INFOS),
+    fetchAirtableData('Artist Pitch'), // Tabelle 1
+    fetchAirtableData('Label Pitch')   // Tabelle 2
   ]);
 
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
-  if (history.length > 6) history.shift();
+  if (history.length > 8) history.shift();
 
   const systemMessage = { 
     role: "system", 
-    content: `Du bist der A&R Assistent. Antworte professionell.
+    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und präzise.
     
-    WISSEN:
-    - KONTAKTE: ${JSON.stringify(artistInfos)}
-    - BIOS: ${JSON.stringify(bios)}
-    - STUDIOS: ${JSON.stringify(studios)}
-    - REGELN: ${JSON.stringify(config)}
+    RICHTLINIEN AUS DER CONFIG: ${JSON.stringify(config)}
 
-    Wenn du nach einer Nummer fragst (z.B. Burek), schau in KONTAKTE nach.` 
+    WISSEN:
+    - ARTIST PITCH (Emails/Prio/Genre): ${JSON.stringify(artistPitch)}
+    - LABEL PITCH (A&Rs/Label): ${JSON.stringify(labelPitch)}
+    - ARTIST INFOS (Notion/Telefon): ${JSON.stringify(artistInfos)}
+    - BIOS (Notion): ${JSON.stringify(bios)}
+    - STUDIOS: ${JSON.stringify(studios)}
+
+    DEINE AUFGABEN:
+    1. Wenn nach Emails/Manager gefragt wird, schau in ARTIST PITCH. Nenne Vorname + Email.
+    2. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
+    3. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
+    4. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten.
+    5. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.` 
   };
 
   const completion = await openai.chat.completions.create({
@@ -98,6 +121,8 @@ async function handleChat(chatId, text) {
   chatContext.set(chatId, history);
   return answer;
 }
+
+// --- BOT EVENTS & SERVER ---
 
 bot.on("message", async (msg) => {
   if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
@@ -129,4 +154,5 @@ app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(re
 app.listen(PORT, async () => {
   await bot.deleteWebHook({ drop_pending_updates: true });
   await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
+  console.log("Bot läuft und hört auf Notion & Airtable.");
 });
