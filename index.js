@@ -63,7 +63,7 @@ async function fetchFullDatabase(id) {
 }
 
 async function handleChat(chatId, text) {
-  // Lädt alle 5 Datenbanken direkt und strukturiert
+  // Wir laden ALLES. Wenn eine DB fehlt, gibt er einen Fehler im Log aus.
   const [config, studios, bios, publishing, artistInfos] = await Promise.all([
     fetchFullDatabase(DB_CONFIG),
     fetchFullDatabase(DB_STUDIOS),
@@ -78,18 +78,19 @@ async function handleChat(chatId, text) {
 
   const systemMessage = { 
     role: "system", 
-    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und sachlich.
-    
-    REGELN:
-    1. Sessionzusammenfassungen & Labelcopys: Fehlende Infos = Zeile weglassen.
-    2. Start-Zeit Standard: 12:00 Uhr.
-    3. Nutze die Config zur Steuerung: ${JSON.stringify(config)}.
+    content: `Du bist der A&R Assistent. Antworte normal und professionell.
     
     DEIN WISSEN:
-    - ARTIST KONTAKTE (Telefon): ${JSON.stringify(artistInfos)}
+    - KONTAKTE (Telefonnummern): ${JSON.stringify(artistInfos)}
     - BIOS: ${JSON.stringify(bios)}
-    - IPIs & PUBLISHING: ${JSON.stringify(publishing)}
-    - STUDIOS: ${JSON.stringify(studios)}` 
+    - IPIs: ${JSON.stringify(publishing)}
+    - STUDIOS: ${JSON.stringify(studios)}
+    - REGELN: ${JSON.stringify(config)}
+
+    ANWEISUNG: 
+    In der Tabelle 'KONTAKTE' stehen Namen wie Burek, Rokston, Emil etc..
+    Wenn jemand nach einer Telefonnummer fragt, schau dort nach. 
+    Lass bei Zusammenfassungen leere Felder weg.` 
   };
 
   const completion = await openai.chat.completions.create({
