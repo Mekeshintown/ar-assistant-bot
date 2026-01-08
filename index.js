@@ -137,18 +137,25 @@ async function handleChat(chatId, text) {
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 8) history.shift();
+  
+  const pitchRules = config.find(c => c.Key === "Pitch_Rules")?.Value || "";
+  const sonstigeRegeln = config.filter(c => c.Key !== "Pitch_Rules");
 
   const systemMessage = { 
     role: "system", 
     content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und präzise.
     
-    RICHTLINIEN AUS DER CONFIG: ${JSON.stringify(config)}
+    ### UNBEDINGT BEACHTEN: PITCH REGELN ###
+    ${pitchRules}
 
-    WISSEN:
+    ### WEITERE RICHTLINIEN ###
+    ${JSON.stringify(sonstigeRegeln)}
+
+    ### WISSENSDATENBANK ###
     - ARTIST PITCH (Emails/Prio/Genre): ${JSON.stringify(artistPitch)}
     - LABEL PITCH (A&Rs/Label): ${JSON.stringify(labelPitch)}
-    - ARTIST INFOS (Notion/Telefon): ${JSON.stringify(artistInfos)}
-    - BIOS (Notion): ${JSON.stringify(bios)}
+    - ARTIST INFOS: ${JSON.stringify(artistInfos)}
+    - BIOS: ${JSON.stringify(bios)}
     - STUDIOS: ${JSON.stringify(studios)}
 
     DEINE AUFGABEN:
