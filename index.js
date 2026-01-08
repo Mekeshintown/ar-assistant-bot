@@ -62,6 +62,7 @@ async function fetchFullDatabase(id) {
 }
 
 async function handleChat(chatId, text) {
+  // 1. Kern-Daten aus deinen 4 Haupt-Tabellen laden
   const [config, studios, bios, publishing] = await Promise.all([
     fetchFullDatabase(DB_CONFIG),
     fetchFullDatabase(DB_STUDIOS),
@@ -69,8 +70,12 @@ async function handleChat(chatId, text) {
     fetchFullDatabase(DB_PUBLISHING)
   ]);
 
-  const extraContext = await universalNotionSearch(text);
+  // 2. UNIVERSAL SUCHE OPTIMIEREN
+  // Wir filtern Wörter wie "Nummer" oder "von" raus, damit er direkt nach "Burek" in Notion sucht
+  const searchKeywords = text.replace(/(wie|ist|die|nummer|von|wer|was|hat|der|die|das|bitte|telefonnummer)/gi, "").trim();
+  const extraContext = await universalNotionSearch(searchKeywords || text);
 
+  // 3. Chat-Verlauf für das Gedächtnis verarbeiten
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 6) history.shift();
@@ -80,16 +85,19 @@ async function handleChat(chatId, text) {
     content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und sachlich.
     
     DEINE REGELN:
-    1. Für SESSIONZUSAMMENFASSUNGEN und LABELCOPYS: Wenn Informationen fehlen, schreibe NIEMALS "missing", "unbekannt" oder Platzhalter. Lass die entsprechende Zeile oder das Feld einfach komplett weg.
-    2. Wenn keine Start-Zeit in den Daten steht, nutze standardmäßig 12:00 Uhr.
-    3. Bei allgemeinen Fragen (z.B. nach einer IPI oder Bio): Wenn du nichts findest, sag sachlich, dass die Info in der Datenbank noch fehlt.
-    4. Nutze die Config: ${JSON.stringify(config)}.
+    1. Für SESSIONZUSAMMENFASSUNGEN und LABELCOPYS: Wenn Informationen fehlen, schreibe NIEMALS "missing" oder Platzhalter. Lass die Zeile einfach komplett weg.
+    2. Start-Zeit Standard: 12:00 Uhr.
+    3. Nutze deine Config zur Steuerung: ${JSON.stringify(config)}.
     
-    WISSEN:
+    DEIN WISSEN (KERN):
     - BIOS: ${JSON.stringify(bios)}
     - IPIs: ${JSON.stringify(publishing)}
     - STUDIOS: ${JSON.stringify(studios)}
-    - UNIVERSAL-SUCHE: ${extraContext}` 
+    
+    ZUSÄTZLICHES WISSEN AUS DER GESAMTEN NOTION-SUCHE:
+    ${extraContext}
+    
+    WICHTIG: Wenn du im "Zusätzlichen Wissen" Telefonnummern (wie von Burek, Rokston oder anderen) findest, gib sie direkt aus.` 
   };
 
   const completion = await openai.chat.completions.create({
