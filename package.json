@@ -1,7 +1,7 @@
 {
   "name": "ar-assistant-bot",
   "version": "1.0.0",
-  "description": "Telegram A&R Assistant (Webhook, Render)",
+  "description": "L'Agentur A&R Assistant",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -13,6 +13,7 @@
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
     "@notionhq/client": "^2.2.15",
-    "openai": "^4.24.1"
+    "openai": "^4.24.1",
+    "axios": "^1.6.0"
   }
 }
