@@ -6,13 +6,13 @@ const { Client: NotionClient } = require("@notionhq/client");
 const OpenAI = require("openai");
 const axios = require("axios");
 const fs = require("fs");
-const Airtable = require("airtable"); // NEU
+const Airtable = require("airtable");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY; // NEU in Render/Environment
+const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const PORT = process.env.PORT || 3000;
 
 // DEINE IDs
@@ -21,12 +21,12 @@ const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0"; 
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
-const AIRTABLE_BASE_ID = "appF535cRZRho6btT"; // Deine Base ID
+const AIRTABLE_BASE_ID = "appF535cRZRho6btT";
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const notion = new NotionClient({ auth: NOTION_TOKEN });
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID); // NEU
+const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
 const chatContext = new Map();
 const app = express();
@@ -58,7 +58,6 @@ async function fetchFullDatabase(id) {
   } catch (e) { return []; }
 }
 
-// Neue Hilfsfunktion für Airtable
 async function fetchAirtableData(tableName) {
   try {
     const records = await airtableBase(tableName).select().all();
@@ -76,16 +75,48 @@ async function handleChat(chatId, text) {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
 
-  // Wir laden Notion UND Airtable parallel
+  // Laden aller Daten
   const [config, studios, bios, artistInfos, artistPitch, labelPitch] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
     fetchSafely(DB_BIOS),
     fetchSafely(DB_ARTIST_INFOS),
-    fetchAirtableData('Artist Pitch'), // Tabelle 1
-    fetchAirtableData('Label Pitch')   // Tabelle 2
+    fetchAirtableData('Artist Pitch'),
+    fetchAirtableData('Label Pitch')
   ]);
 
+  // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? ---
+  const triggerWords = ["speichere", "adden", "hinzufügen", "eintragen"];
+  if (triggerWords.some(word => text.toLowerCase().includes(word))) {
+    try {
+      const extraction = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { 
+            role: "system", 
+            content: `Du bist ein Daten-Extraktor. Extrahiere Kontaktdaten aus dem Text für Airtable. 
+            Ziel-Felder: Artist_Name, Contact_FirstName, Contact_LastName, Email, Label_Name. 
+            Gib NUR ein valides JSON Objekt zurück. Falls Felder fehlen, lass sie leer ("").
+            Entscheide ob es in die Tabelle "Artist Pitch" oder "Label Pitch" gehört (Key: "table").` 
+          },
+          { role: "user", content: text }
+        ],
+        response_format: { type: "json_object" }
+      });
+
+      const result = JSON.parse(extraction.choices[0].message.content);
+      const tableName = result.table || (text.toLowerCase().includes("label") ? "Label Pitch" : "Artist Pitch");
+      delete result.table; // Tabelle-Key entfernen vor dem Upload
+
+      await airtableBase(tableName).create([{ fields: result }]);
+      return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${result.Contact_FirstName || ""} ${result.Contact_LastName || ""}\n📧 ${result.Email}\n🎤 ${result.Artist_Name || result.Label_Name || ""}`;
+    } catch (error) {
+      console.error("Airtable Save Error:", error);
+      return "❌ Fehler beim Speichern in Airtable. Stelle sicher, dass Name und Email im Text vorkommen.";
+    }
+  }
+
+  // --- NORMALER CHAT / PITCH LOGIK ---
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 8) history.shift();
@@ -107,7 +138,7 @@ async function handleChat(chatId, text) {
     1. Wenn nach Emails/Manager gefragt wird, schau in ARTIST PITCH. Nenne Vorname + Email.
     2. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
     3. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
-    4. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten.
+    4. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten und den Pitch_Rules aus der Config.
     5. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.` 
   };
 
