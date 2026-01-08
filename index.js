@@ -4,7 +4,7 @@ const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
 const { Client: NotionClient } = require("@notionhq/client");
 const OpenAI = require("openai");
-const axios = require("axios"); // Für den Audio-Download
+const axios = require("axios");
 const fs = require("fs");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -15,16 +15,14 @@ const PORT = process.env.PORT || 3000;
 
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
-const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0";
+const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0";
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const notion = new NotionClient({ auth: NOTION_TOKEN });
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// Einfacher Speicher für den Chat-Verlauf (Memory)
 const chatContext = new Map();
-
 const app = express();
 app.use(express.json());
 
@@ -42,14 +40,27 @@ function parseProperties(properties) {
   return data;
 }
 
-async function fetchFullDatabase(databaseId) {
+async function universalNotionSearch(query) {
   try {
-    const response = await notion.databases.query({ database_id: databaseId });
-    return response.results.map(page => parseProperties(page.properties));
+    const response = await notion.search({
+      query: query,
+      sort: { direction: "descending", timestamp: "last_edited_time" },
+      page_size: 5,
+    });
+    return response.results.map(res => {
+      if (res.properties) return JSON.stringify(parseProperties(res.properties));
+      return `Seite: ${res.url}`; 
+    }).join("\n");
+  } catch (e) { return ""; }
+}
+
+async function fetchFullDatabase(id) {
+  try {
+    const res = await notion.databases.query({ database_id: id });
+    return res.results.map(p => parseProperties(p.properties));
   } catch (e) { return []; }
 }
 
-// Zentrale Funktion für die KI-Antwort (mit Memory)
 async function handleChat(chatId, text) {
   const [config, studios, bios, publishing] = await Promise.all([
     fetchFullDatabase(DB_CONFIG),
@@ -58,18 +69,27 @@ async function handleChat(chatId, text) {
     fetchFullDatabase(DB_PUBLISHING)
   ]);
 
-  // Hol den bisherigen Verlauf oder starte neu
+  const extraContext = await universalNotionSearch(text);
+
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
-
-  // Wir halten die History kurz (letzte 5 Nachrichten), damit es nicht zu teuer/langsam wird
   if (history.length > 6) history.shift();
 
   const systemMessage = { 
     role: "system", 
-    content: `Du bist der A&R Assistent der L'Agentur. Antworte sachlich und professionell. 
-    Du hast Zugriff auf: BIOS: ${JSON.stringify(bios)}, IPIs: ${JSON.stringify(publishing)}, STUDIOS: ${JSON.stringify(studios)}, CONFIG: ${JSON.stringify(config)}.
-    WICHTIG: Erinnere dich an die vorherigen Nachrichten im Chat, um Korrekturen (z.B. Datumsänderungen) zu verstehen.` 
+    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und sachlich.
+    
+    DEINE REGELN:
+    1. Für SESSIONZUSAMMENFASSUNGEN und LABELCOPYS: Wenn Informationen fehlen, schreibe NIEMALS "missing", "unbekannt" oder Platzhalter. Lass die entsprechende Zeile oder das Feld einfach komplett weg.
+    2. Wenn keine Start-Zeit in den Daten steht, nutze standardmäßig 12:00 Uhr.
+    3. Bei allgemeinen Fragen (z.B. nach einer IPI oder Bio): Wenn du nichts findest, sag sachlich, dass die Info in der Datenbank noch fehlt.
+    4. Nutze die Config: ${JSON.stringify(config)}.
+    
+    WISSEN:
+    - BIOS: ${JSON.stringify(bios)}
+    - IPIs: ${JSON.stringify(publishing)}
+    - STUDIOS: ${JSON.stringify(studios)}
+    - UNIVERSAL-SUCHE: ${extraContext}` 
   };
 
   const completion = await openai.chat.completions.create({
@@ -80,53 +100,36 @@ async function handleChat(chatId, text) {
   const answer = completion.choices[0].message.content;
   history.push({ role: "assistant", content: answer });
   chatContext.set(chatId, history);
-
   return answer;
 }
 
-// Handler für Text
 bot.on("message", async (msg) => {
-  if (msg.voice) return; // Voice wird separat behandelt
-  if (!msg.text || msg.text.startsWith("/")) return;
-  
+  if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
   const answer = await handleChat(msg.chat.id, msg.text);
   await bot.sendMessage(msg.chat.id, answer);
 });
 
-// Handler für Sprachnachrichten (Whisper Integration)
 bot.on("voice", async (msg) => {
   const chatId = msg.chat.id;
   try {
-    await bot.sendMessage(chatId, "Ich höre kurz rein... 🎧");
-    
     const fileLink = await bot.getFileLink(msg.voice.file_id);
     const response = await axios({ url: fileLink, responseType: "stream" });
     const tempPath = `./${msg.voice.file_id}.ogg`;
     const writer = fs.createWriteStream(tempPath);
-    
     response.data.pipe(writer);
-
     writer.on("finish", async () => {
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
         model: "whisper-1",
       });
-      
-      fs.unlinkSync(tempPath); // Temp Datei löschen
-      
-      const answer = await handleChat(chatId, `(Sprachnachricht): ${transcription.text}`);
+      fs.unlinkSync(tempPath);
+      const answer = await handleChat(chatId, transcription.text);
       await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
     });
-  } catch (err) {
-    await bot.sendMessage(chatId, "Konnte die Sprachnachricht leider nicht verarbeiten.");
-  }
+  } catch (err) { await bot.sendMessage(chatId, "Fehler beim Audio."); }
 });
 
-app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
-});
-
+app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
 app.listen(PORT, async () => {
   await bot.deleteWebHook({ drop_pending_updates: true });
   await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
