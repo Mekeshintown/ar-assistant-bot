@@ -13,11 +13,12 @@ const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
+// DEINE VERIFIZIERTEN IDs
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0";
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
-const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
+const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b"; 
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const notion = new NotionClient({ auth: NOTION_TOKEN });
@@ -41,20 +42,6 @@ function parseProperties(properties) {
   return data;
 }
 
-async function universalNotionSearch(query) {
-  try {
-    const response = await notion.search({
-      query: query,
-      sort: { direction: "descending", timestamp: "last_edited_time" },
-      page_size: 5,
-    });
-    return response.results.map(res => {
-      if (res.properties) return JSON.stringify(parseProperties(res.properties));
-      return `Seite: ${res.url}`; 
-    }).join("\n");
-  } catch (e) { return ""; }
-}
-
 async function fetchFullDatabase(id) {
   try {
     const res = await notion.databases.query({ database_id: id });
@@ -63,7 +50,6 @@ async function fetchFullDatabase(id) {
 }
 
 async function handleChat(chatId, text) {
-  // Wir laden ALLES. Wenn eine DB fehlt, gibt er einen Fehler im Log aus.
   const [config, studios, bios, publishing, artistInfos] = await Promise.all([
     fetchFullDatabase(DB_CONFIG),
     fetchFullDatabase(DB_STUDIOS),
@@ -78,19 +64,19 @@ async function handleChat(chatId, text) {
 
   const systemMessage = { 
     role: "system", 
-    content: `Du bist der A&R Assistent. Antworte normal und professionell.
+    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und sachlich.
     
-    DEIN WISSEN:
-    - KONTAKTE (Telefonnummern): ${JSON.stringify(artistInfos)}
+    DEINE DATEN:
+    - KONTAKTLISTE (Telefonnummern): ${JSON.stringify(artistInfos)}
     - BIOS: ${JSON.stringify(bios)}
-    - IPIs: ${JSON.stringify(publishing)}
     - STUDIOS: ${JSON.stringify(studios)}
+    - IPIs: ${JSON.stringify(publishing)}
     - REGELN: ${JSON.stringify(config)}
 
-    ANWEISUNG: 
-    In der Tabelle 'KONTAKTE' stehen Namen wie Burek, Rokston, Emil etc..
-    Wenn jemand nach einer Telefonnummer fragt, schau dort nach. 
-    Lass bei Zusammenfassungen leere Felder weg.` 
+    WICHTIGSTE REGELN:
+    1. Wenn du nach Telefonnummern gefragt wirst (Burek, Rokston, Vince etc.), schau in der KONTAKTLISTE nach.
+    2. Für Zusammenfassungen/Labelcopys: Fehlende Infos = Zeile weglassen.
+    3. Start-Zeit Standard: 12:00 Uhr.` 
   };
 
   const completion = await openai.chat.completions.create({
