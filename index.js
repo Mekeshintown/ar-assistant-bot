@@ -50,12 +50,22 @@ async function fetchFullDatabase(id) {
 }
 
 async function handleChat(chatId, text) {
+  // Wir laden die Daten einzeln, damit ein Fehler bei einer DB nicht alles stoppt
+  const fetchSafely = async (id) => {
+    try {
+      return await fetchFullDatabase(id);
+    } catch (e) {
+      console.log(`Fehler bei ID ${id}:`, e.message);
+      return []; // Gibt leere Liste zurück statt abzustürzen
+    }
+  };
+
   const [config, studios, bios, publishing, artistInfos] = await Promise.all([
-    fetchFullDatabase(DB_CONFIG),
-    fetchFullDatabase(DB_STUDIOS),
-    fetchFullDatabase(DB_BIOS),
-    fetchFullDatabase(DB_PUBLISHING),
-    fetchFullDatabase(DB_ARTIST_INFOS)
+    fetchSafely(DB_CONFIG),
+    fetchSafely(DB_STUDIOS),
+    fetchSafely(DB_BIOS),
+    fetchSafely(DB_PUBLISHING),
+    fetchSafely(DB_ARTIST_INFOS)
   ]);
 
   let history = chatContext.get(chatId) || [];
@@ -64,19 +74,15 @@ async function handleChat(chatId, text) {
 
   const systemMessage = { 
     role: "system", 
-    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und sachlich.
+    content: `Du bist der A&R Assistent. Antworte professionell.
     
-    DEINE DATEN:
-    - KONTAKTLISTE (Telefonnummern): ${JSON.stringify(artistInfos)}
+    WISSEN:
+    - KONTAKTE: ${JSON.stringify(artistInfos)}
     - BIOS: ${JSON.stringify(bios)}
     - STUDIOS: ${JSON.stringify(studios)}
-    - IPIs: ${JSON.stringify(publishing)}
     - REGELN: ${JSON.stringify(config)}
 
-    WICHTIGSTE REGELN:
-    1. Wenn du nach Telefonnummern gefragt wirst (Burek, Rokston, Vince etc.), schau in der KONTAKTLISTE nach.
-    2. Für Zusammenfassungen/Labelcopys: Fehlende Infos = Zeile weglassen.
-    3. Start-Zeit Standard: 12:00 Uhr.` 
+    Wenn du nach einer Nummer fragst (z.B. Burek), schau in KONTAKTE nach.` 
   };
 
   const completion = await openai.chat.completions.create({
