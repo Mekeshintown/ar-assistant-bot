@@ -85,8 +85,8 @@ async function handleChat(chatId, text) {
     fetchAirtableData('Label Pitch')
   ]);
 
-  // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? ---
-  const triggerWords = ["speichere", "adden", "hinzufügen", "eintragen"];
+ // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? ---
+  const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
   if (triggerWords.some(word => text.toLowerCase().includes(word))) {
     try {
       const extraction = await openai.chat.completions.create({
@@ -94,9 +94,9 @@ async function handleChat(chatId, text) {
         messages: [
           { 
             role: "system", 
-            content: `Du bist ein Daten-Extraktor. Extrahiere Kontaktdaten aus dem Text für Airtable. 
-            Ziel-Felder: Artist_Name, Contact_FirstName, Contact_LastName, Email, Label_Name. 
-            Gib NUR ein valides JSON Objekt zurück. Falls Felder fehlen, lass sie leer ("").
+            content: `Du bist ein Daten-Extraktor. Extrahiere Kontaktdaten.
+            Mögliche Felder: Artist_Name, Contact_FirstName, Contact_LastName, Email, Label_Name, Genre, Prio.
+            Gib NUR ein valides JSON Objekt zurück.
             Entscheide ob es in die Tabelle "Artist Pitch" oder "Label Pitch" gehört (Key: "table").` 
           },
           { role: "user", content: text }
@@ -106,13 +106,30 @@ async function handleChat(chatId, text) {
 
       const result = JSON.parse(extraction.choices[0].message.content);
       const tableName = result.table || (text.toLowerCase().includes("label") ? "Label Pitch" : "Artist Pitch");
-      delete result.table; // Tabelle-Key entfernen vor dem Upload
+      
+      // WICHTIG: Hier filtern wir die Felder nach Tabelle
+      let finalFields = {};
+      if (tableName === "Artist Pitch") {
+        // Nur Felder die in deiner Artist-Tabelle existieren
+        if (result.Artist_Name) finalFields.Artist_Name = result.Artist_Name;
+        if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
+        if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
+        if (result.Email) finalFields.Email = result.Email;
+        if (result.Genre) finalFields.Genre = result.Genre;
+        if (result.Prio) finalFields.Prio = result.Prio;
+      } else {
+        // Felder für die Label-Tabelle
+        if (result.Label_Name) finalFields.Label_Name = result.Label_Name;
+        if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
+        if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
+        if (result.Email) finalFields.Email = result.Email;
+      }
 
-      await airtableBase(tableName).create([{ fields: result }]);
-      return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${result.Contact_FirstName || ""} ${result.Contact_LastName || ""}\n📧 ${result.Email}\n🎤 ${result.Artist_Name || result.Label_Name || ""}`;
+      await airtableBase(tableName).create([{ fields: finalFields }]);
+      return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${finalFields.Contact_FirstName || ""} ${finalFields.Contact_LastName || ""}\n📧 ${finalFields.Email}`;
     } catch (error) {
       console.error("Airtable Save Error:", error);
-      return "❌ Fehler beim Speichern in Airtable. Stelle sicher, dass Name und Email im Text vorkommen.";
+      return "❌ Fehler beim Speichern. Prüfe ob alle Spaltennamen in Airtable korrekt sind.";
     }
   }
 
