@@ -17,6 +17,7 @@ const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e1c841ccef9807e9b73c9666ce4fcb0";
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
+const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const notion = new NotionClient({ auth: NOTION_TOKEN });
@@ -62,20 +63,15 @@ async function fetchFullDatabase(id) {
 }
 
 async function handleChat(chatId, text) {
-  // 1. Kern-Daten aus deinen 4 Haupt-Tabellen laden
-  const [config, studios, bios, publishing] = await Promise.all([
+  // Lädt alle 5 Datenbanken direkt und strukturiert
+  const [config, studios, bios, publishing, artistInfos] = await Promise.all([
     fetchFullDatabase(DB_CONFIG),
     fetchFullDatabase(DB_STUDIOS),
     fetchFullDatabase(DB_BIOS),
-    fetchFullDatabase(DB_PUBLISHING)
+    fetchFullDatabase(DB_PUBLISHING),
+    fetchFullDatabase(DB_ARTIST_INFOS)
   ]);
 
-  // 2. UNIVERSAL SUCHE OPTIMIEREN
-  // Wir filtern Wörter wie "Nummer" oder "von" raus, damit er direkt nach "Burek" in Notion sucht
-  const searchKeywords = text.replace(/(wie|ist|die|nummer|von|wer|was|hat|der|die|das|bitte|telefonnummer)/gi, "").trim();
-  const extraContext = await universalNotionSearch(searchKeywords || text);
-
-  // 3. Chat-Verlauf für das Gedächtnis verarbeiten
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 6) history.shift();
@@ -84,20 +80,16 @@ async function handleChat(chatId, text) {
     role: "system", 
     content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und sachlich.
     
-    DEINE REGELN:
-    1. Für SESSIONZUSAMMENFASSUNGEN und LABELCOPYS: Wenn Informationen fehlen, schreibe NIEMALS "missing" oder Platzhalter. Lass die Zeile einfach komplett weg.
+    REGELN:
+    1. Sessionzusammenfassungen & Labelcopys: Fehlende Infos = Zeile weglassen.
     2. Start-Zeit Standard: 12:00 Uhr.
-    3. Nutze deine Config zur Steuerung: ${JSON.stringify(config)}.
+    3. Nutze die Config zur Steuerung: ${JSON.stringify(config)}.
     
-    DEIN WISSEN (KERN):
+    DEIN WISSEN:
+    - ARTIST KONTAKTE (Telefon): ${JSON.stringify(artistInfos)}
     - BIOS: ${JSON.stringify(bios)}
-    - IPIs: ${JSON.stringify(publishing)}
-    - STUDIOS: ${JSON.stringify(studios)}
-    
-    ZUSÄTZLICHES WISSEN AUS DER GESAMTEN NOTION-SUCHE:
-    ${extraContext}
-    
-    WICHTIG: Wenn du im "Zusätzlichen Wissen" Telefonnummern (wie von Burek, Rokston oder anderen) findest, gib sie direkt aus.` 
+    - IPIs & PUBLISHING: ${JSON.stringify(publishing)}
+    - STUDIOS: ${JSON.stringify(studios)}` 
   };
 
   const completion = await openai.chat.completions.create({
