@@ -98,9 +98,9 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_CALENDARS) // NEU: Lädt deine Kalender-IDs aus Notion
   ]);
 
- // --- KALENDER LOGIK (LESEN & SCHREIBEN) ---
+ // --- KALENDER LOGIK (VERSION: PRO-DISPLAY & INVITES) ---
   const textLower = text.toLowerCase();
-  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session"];
+  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
   
   if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
     try {
@@ -110,17 +110,16 @@ async function handleChat(chatId, text) {
           { 
             role: "system", 
             content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
-            Verfügbare Künstler aus Notion: ${calendarList.map(c => c.Name).join(", ")}.
+            Künstler: ${calendarList.map(c => c.Name).join(", ")}.
             
-            Deine Aufgabe:
+            Aufgabe:
             1. type: "read" (Abfragen) oder "write" (Eintragen).
-            2. artist: Den passenden Künstlernamen aus der Liste.
-            3. start_iso: Startzeitpunkt als ISO-String (Format: YYYY-MM-DDTHH:mm:ss).
-            4. end_iso: Endzeitpunkt als ISO-String (Format: YYYY-MM-DDTHH:mm:ss).
-            5. title: Der Titel des Termins (nur für "write").
+            2. artist: Name aus der Liste.
+            3. start_iso & end_iso: ISO-Strings (YYYY-MM-DDTHH:mm:ss).
+            4. title: Titel (nur write).
+            5. attendees: Extrahiere E-Mail-Adressen, falls der User jemanden einladen will (als Array).
             
-            Wichtig für "read": Wenn nach einem Zeitraum gefragt wird (z.B. die Woche), setze start_iso und end_iso entsprechend.
-            Gib NUR ein valides JSON Objekt zurück.` 
+            Gib NUR JSON zurück.` 
           },
           { role: "user", content: text }
         ],
@@ -128,22 +127,16 @@ async function handleChat(chatId, text) {
       });
 
       const data = JSON.parse(extraction.choices[0].message.content);
-      
-      // Mapping: Suche die CalendarID basierend auf Notion
-      const artistEntry = calendarList.find(c => 
-        data.artist && c.Name && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim()
-      );
-      
+      const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
       const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
-      const artistDisplayName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
+      const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
 
-      // Hilfsfunktion: Repariert ISO-Strings für Google (fügt "Z" hinzu, falls es fehlt)
       const formatForGoogle = (dateStr) => {
         if (!dateStr) return new Date().toISOString();
         return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
       };
 
-      // --- FALL A: TERMINE LESEN ---
+      // --- FALL A: TERMINE LESEN (MIT VERBESSERTER ANZEIGE) ---
       if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("zeit")) {
         const response = await calendar.events.list({
           calendarId: calId,
@@ -154,37 +147,54 @@ async function handleChat(chatId, text) {
         });
 
         const events = response.data.items;
-        if (!events || events.length === 0) {
-          return `📅 Keine Termine für **${artistDisplayName}** im Zeitraum gefunden.`;
-        }
+        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** im Zeitraum gefunden.`;
 
-        let list = `📅 **Termine für ${artistDisplayName}:**\n`;
+        let list = `📅 **Termine für ${artistName}:**\n`;
         events.forEach(e => {
-          const start = new Date(e.start.dateTime || e.start.date).toLocaleString('de-DE', { 
-            weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' 
-          });
-          list += `• ${start}: ${e.summary}\n`;
+          const start = new Date(e.start.dateTime || e.start.date);
+          const end = new Date(e.end.dateTime || e.end.date);
+          
+          // Formatierung Wochentag & Datum
+          const dateStr = start.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+          
+          // Prüfen ob Ganztägig oder Mehrtägig
+          const isAllDay = !e.start.dateTime;
+          const isMultiDay = (end - start) > 24 * 60 * 60 * 1000;
+
+          if (isMultiDay) {
+            const endStr = end.toLocaleString('de-DE', { day: '2-digit', month: '2-digit' });
+            list += `• ${dateStr} bis ${endStr}: **${e.summary}** 🗓️\n`;
+          } else {
+            const timeStr = isAllDay ? "Ganztägig" : start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+            list += `• ${dateStr} (${timeStr}): **${e.summary}**\n`;
+          }
         });
         return list;
       } 
       
-      // --- FALL B: TERMIN EINTRAGEN (WRITE) ---
+      // --- FALL B: TERMIN EINTRAGEN (MIT EINLADUNGEN) ---
       else {
         const event = {
           summary: data.title || "Neuer Termin",
           start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
-          end: { 
-            dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), 
-            timeZone: "Europe/Berlin" 
-          }
+          end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
+          // Einladungen hinzufügen
+          attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
         };
 
-        await calendar.events.insert({ calendarId: calId, resource: event });
-        return `✅ Termin erfolgreich eingetragen für **${artistDisplayName}**\n📌 ${data.title}\n⏰ ${new Date(formatForGoogle(data.start_iso)).toLocaleString('de-DE')}`;
+        await calendar.events.insert({ 
+          calendarId: calId, 
+          resource: event,
+          sendUpdates: data.attendees ? "all" : "none" // Verschickt Mails an Teilnehmer
+        });
+
+        let msg = `✅ Termin eingetragen für **${artistName}**\n📌 ${data.title}\n⏰ ${new Date(formatForGoogle(data.start_iso)).toLocaleString('de-DE')}`;
+        if (data.attendees && data.attendees.length > 0) msg += `\n✉️ Einladungen an: ${data.attendees.join(", ")}`;
+        return msg;
       }
 
     } catch (err) {
-      console.error("Calendar Logik Fehler:", err);
+      console.error("Calendar Error:", err);
       return "❌ Kalender-Fehler. Bitte prüfe Künstler und Zeitraum.";
     }
   }
