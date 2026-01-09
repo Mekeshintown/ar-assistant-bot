@@ -7,6 +7,7 @@ const OpenAI = require("openai");
 const axios = require("axios");
 const fs = require("fs");
 const Airtable = require("airtable");
+const { google } = require("googleapis"); // NEU hinzugefügt
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
@@ -15,12 +16,22 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const PORT = process.env.PORT || 3000;
 
+// Google Calendar Setup (NEU)
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI
+);
+oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+
 // DEINE IDs
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0"; 
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
+const DB_CALENDARS = "2e3c841ccef9800d96f2c38345eeb2bc"; // NEU: Deine Kalender-Tabelle
 const AIRTABLE_BASE_ID = "appF535cRZRho6btT";
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
@@ -75,20 +86,64 @@ async function handleChat(chatId, text) {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
 
-  // Laden aller Daten (Jetzt inkl. Publishing)
-  const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing] = await Promise.all([
+  // Laden aller Daten
+  const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
     fetchSafely(DB_BIOS),
     fetchSafely(DB_ARTIST_INFOS),
     fetchAirtableData('Artist Pitch'),
     fetchAirtableData('Label Pitch'),
-    fetchSafely(DB_PUBLISHING) // Publishing wird jetzt mitgeladen
+    fetchSafely(DB_PUBLISHING),
+    fetchSafely(DB_CALENDARS) // NEU: Lädt deine Kalender-IDs aus Notion
   ]);
 
-  // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? ---
+  // --- NEU: CHECK KALENDER ---
+  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "studio-termin"];
+  if (calendarTriggers.some(word => text.toLowerCase().includes(word)) && text.length > 15) {
+    try {
+      const extraction = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { 
+            role: "system", 
+            content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
+            Verfügbare Kalender (Künstler): ${calendarList.map(c => c.Name).join(", ")}.
+            Extrahiere: title, start_iso (ISO String), artist (Name aus der Liste), duration (in Minuten, Standard 60).
+            Gib NUR ein valides JSON Objekt zurück.` 
+          },
+          { role: "user", content: text }
+        ],
+        response_format: { type: "json_object" }
+      });
+
+      const data = JSON.parse(extraction.choices[0].message.content);
+      const artistEntry = calendarList.find(c => 
+        data.artist && c.Name.toLowerCase().includes(data.artist.toLowerCase())
+      );
+      
+      const calId = artistEntry ? artistEntry.CalendarID : "primary";
+      
+      const event = {
+        summary: data.title,
+        start: { dateTime: data.start_iso, timeZone: "Europe/Berlin" },
+        end: { 
+          dateTime: new Date(new Date(data.start_iso).getTime() + (data.duration || 60) * 60000).toISOString(), 
+          timeZone: "Europe/Berlin" 
+        }
+      };
+
+      await calendar.events.insert({ calendarId: calId, resource: event });
+      return `✅ Termin eingetragen für **${artistEntry ? artistEntry.Name : "Hauptkalender"}**\n📌 ${data.title}\n⏰ ${new Date(data.start_iso).toLocaleString('de-DE')}`;
+    } catch (err) {
+      console.error("Calendar Error:", err);
+      return "❌ Konnte den Termin nicht eintragen. Nenne bitte Künstler, Datum und Uhrzeit.";
+    }
+  }
+
+  // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? (Airtable) ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
-  if (triggerWords.some(word => text.toLowerCase().includes(word))) {
+  if (triggerWords.some(word => text.toLowerCase().includes(word)) && !text.toLowerCase().includes("termin")) {
     try {
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -127,7 +182,7 @@ async function handleChat(chatId, text) {
       return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${finalFields.Contact_FirstName || ""} ${finalFields.Contact_LastName || ""}\n📧 ${finalFields.Email}`;
     } catch (error) {
       console.error("Airtable Save Error:", error);
-      return "❌ Fehler beim Speichern. Prüfe ob alle Spaltennamen in Airtable korrekt sind.";
+      return "❌ Fehler beim Speichern in Airtable.";
     }
   }
 
@@ -182,7 +237,7 @@ async function handleChat(chatId, text) {
 bot.on("message", async (msg) => {
   if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
   const answer = await handleChat(msg.chat.id, msg.text);
-  await bot.sendMessage(msg.chat.id, answer);
+  await bot.sendMessage(msg.chat.id, answer, { parse_mode: "Markdown" });
 });
 
 bot.on("voice", async (msg) => {
@@ -209,5 +264,5 @@ app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(re
 app.listen(PORT, async () => {
   await bot.deleteWebHook({ drop_pending_updates: true });
   await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
-  console.log("Bot läuft und hört auf Notion & Airtable.");
+  console.log("Bot läuft und hört auf Notion, Airtable & Kalender.");
 });
