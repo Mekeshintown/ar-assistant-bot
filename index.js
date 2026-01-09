@@ -98,7 +98,7 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_CALENDARS) // NEU: Lädt deine Kalender-IDs aus Notion
   ]);
 
-  // --- NEU: CHECK KALENDER ---
+  // 2. CHECK: KALENDER EINTRAGEN
   const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "studio-termin"];
   if (calendarTriggers.some(word => text.toLowerCase().includes(word)) && text.length > 15) {
     try {
@@ -118,11 +118,14 @@ async function handleChat(chatId, text) {
       });
 
       const data = JSON.parse(extraction.choices[0].message.content);
+      
+      // Suchlogik angepasst auf "Calendar ID" (mit Leerzeichen)
       const artistEntry = calendarList.find(c => 
-        data.artist && c.Name.toLowerCase().includes(data.artist.toLowerCase())
+        data.artist && c.Name && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim()
       );
       
-      const calId = artistEntry ? artistEntry.CalendarID : "primary";
+      // Wenn in Notion gefunden, nimm die ID. Sonst nimm deine Email als Standard.
+      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"] : "mate.spellenberg.umusic@gmail.com";
       
       const event = {
         summary: data.title,
@@ -133,11 +136,11 @@ async function handleChat(chatId, text) {
         }
       };
 
-      await calendar.events.insert({ calendarId: calId, resource: event });
-      return `✅ Termin eingetragen für **${artistEntry ? artistEntry.Name : "Hauptkalender"}**\n📌 ${data.title}\n⏰ ${new Date(data.start_iso).toLocaleString('de-DE')}`;
+      await calendar.events.insert({ calendarId: calId.trim(), resource: event });
+      return `✅ Termin eingetragen für **${artistEntry ? artistEntry.Name : "Mate (Standard)"}**\n📌 ${data.title}\n⏰ ${new Date(data.start_iso).toLocaleString('de-DE')}`;
     } catch (err) {
-      console.error("Calendar Error:", err);
-      return "❌ Konnte den Termin nicht eintragen. Nenne bitte Künstler, Datum und Uhrzeit.";
+      console.error("Calendar Error Details:", err);
+      return "❌ Fehler beim Eintragen. Bitte nenne Künstler, Datum und Uhrzeit.";
     }
   }
 
