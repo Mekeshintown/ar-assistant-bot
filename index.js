@@ -98,22 +98,30 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_CALENDARS) // NEU: Lädt deine Kalender-IDs aus Notion
   ]);
 
-  // --- KALENDER LOGIK (LESEN & SCHREIBEN) ---
-  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen"];
-  if (calendarTriggers.some(word => text.toLowerCase().includes(word)) && text.length > 5) {
+ // --- KALENDER LOGIK (LESEN & SCHREIBEN) ---
+  const textLower = text.toLowerCase();
+  // Erweitertes Trigger-Set für alle Arten von Kalender-Fragen
+  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session"];
+  
+  if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
     try {
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           { 
             role: "system", 
-            content: `Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
-            Verfügbare Künstler: ${calendarList.map(c => c.Name).join(", ")}.
+            content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
+            Verfügbare Künstler aus Notion: ${calendarList.map(c => c.Name).join(", ")}.
             
-            Aufgabe:
-            1. Entscheide: Will der User etwas eintragen ("write") oder Termine abfragen ("read")?
-            2. Extrahiere: artist (Name), start_iso (ISO String), end_iso (ISO String für Zeiträume), title (nur bei write).
-            Gib NUR JSON zurück.` 
+            Deine Aufgabe:
+            1. type: "read" (Abfragen/Checken) oder "write" (Eintragen).
+            2. artist: Den passenden Künstlernamen aus der Liste oben.
+            3. start_iso: Startzeitpunkt als ISO-String.
+            4. end_iso: Endzeitpunkt als ISO-String (bei "read" das Ende des Zeitraums, bei "write" standardmäßig +1 Stunde).
+            5. title: Der Titel des Termins (nur für "write").
+            
+            Wichtig für "read": Wenn der User nach einer Woche fragt (z.B. 13.3.-17.3.), setze start_iso auf den 13.03. 00:00 Uhr und end_iso auf den 17.03. 23:59 Uhr.
+            Gib NUR ein valides JSON Objekt zurück.` 
           },
           { role: "user", content: text }
         ],
@@ -121,44 +129,64 @@ async function handleChat(chatId, text) {
       });
 
       const data = JSON.parse(extraction.choices[0].message.content);
-      const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().includes(data.artist.toLowerCase()));
-      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"] : "mate.spellenberg.umusic@gmail.com";
+      
+      // Den richtigen Kalender finden (Notion Abgleich)
+      const artistEntry = calendarList.find(c => 
+        data.artist && c.Name && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim()
+      );
+      
+      // Fallback auf deine Mail, falls in Notion nichts gefunden wurde
+      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
+      const artistDisplayName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
 
-      // FALL A: TERMINE ABFRAGEN (READ)
-      if (data.type === "read" || text.toLowerCase().includes("wie sieht") || text.toLowerCase().includes("was steht")) {
+      // --- FALL A: TERMINE LESEN / ABFRAGEN ---
+      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("hast du") || textLower.includes("zeit")) {
         const response = await calendar.events.list({
-          calendarId: calId.trim(),
+          calendarId: calId,
           timeMin: data.start_iso || new Date().toISOString(),
-          timeMax: data.end_iso || new Date(new Date().getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          timeMax: data.end_iso || new Date(new Date().getTime() + 24 * 60 * 60 * 1000).toISOString(),
           singleEvents: true,
           orderBy: "startTime",
         });
 
         const events = response.data.items;
-        if (!events || events.length === 0) return `📅 Keine Termine für **${data.artist || "Mate"}** im Zeitraum gefunden.`;
+        if (!events || events.length === 0) {
+          return `📅 Keine Termine für **${artistDisplayName}** im Zeitraum gefunden.`;
+        }
 
-        let list = `📅 **Termine für ${data.artist || "Mate"}:**\n`;
+        let list = `📅 **Termine für ${artistDisplayName}:**\n`;
         events.forEach(e => {
-          const start = new Date(e.start.dateTime || e.start.date).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+          const start = new Date(e.start.dateTime || e.start.date).toLocaleString('de-DE', { 
+            weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' 
+          });
           list += `• ${start}: ${e.summary}\n`;
         });
         return list;
+      } 
+      
+      // --- FALL B: TERMIN EINTRAGEN (WRITE) ---
+      else {
+        const event = {
+          summary: data.title || "Neuer Termin",
+          start: { dateTime: data.start_iso, timeZone: "Europe/Berlin" },
+          end: { 
+            dateTime: data.end_iso || new Date(new Date(data.start_iso).getTime() + 60 * 60000).toISOString(), 
+            timeZone: "Europe/Berlin" 
+          }
+        };
+
+        await calendar.events.insert({ calendarId: calId, resource: event });
+        return `✅ Termin erfolgreich eingetragen für **${artistDisplayName}**\n📌 ${data.title}\n⏰ ${new Date(data.start_iso).toLocaleString('de-DE')}`;
       }
 
-      // FALL B: TERMIN EINTRAGEN (WRITE)
-      const event = {
-        summary: data.title,
-        start: { dateTime: data.start_iso, timeZone: "Europe/Berlin" },
-        end: { dateTime: new Date(new Date(data.start_iso).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" }
-      };
-      await calendar.events.insert({ calendarId: calId.trim(), resource: event });
-      return `✅ Termin eingetragen für **${artistEntry ? artistEntry.Name : "Mate"}**\n📌 ${data.title}\n⏰ ${new Date(data.start_iso).toLocaleString('de-DE')}`;
-
     } catch (err) {
-      console.error("Calendar Error:", err);
-      return "❌ Kalender-Fehler. Bitte nenne Künstler und Zeitraum.";
+      console.error("Calendar Logik Fehler:", err);
+      // Detail-Check für dich in den Logs
+      if (err.errors) console.error("Google Details:", err.errors);
+      return "❌ Kalender-Fehler. Bitte nenne Künstler, Datum und die gewünschte Aktion.";
     }
   }
+  
   // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? (Airtable) ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
   if (triggerWords.some(word => text.toLowerCase().includes(word)) && !text.toLowerCase().includes("termin")) {
