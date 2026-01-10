@@ -7,8 +7,7 @@ const OpenAI = require("openai");
 const axios = require("axios");
 const fs = require("fs");
 const Airtable = require("airtable");
-const { google } = require("googleapis"); // NEU hinzugefügt
-const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun } = require("docx");
+const { google } = require("googleapis");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
@@ -17,7 +16,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-// Google Calendar Setup (NEU)
+// Google Calendar Setup (Aus Basis übernommen)
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -42,11 +41,11 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
 const chatContext = new Map();
-const activeSession = new Map(); 
+const activeSession = new Map(); // Neu für LC
 const app = express();
 app.use(express.json());
 
-// --- HILFSFUNKTIONEN ---
+// --- HILFSFUNKTIONEN (Exakt aus Basis) ---
 
 function parseProperties(properties) {
   let data = {};
@@ -68,7 +67,7 @@ function parseProperties(properties) {
 async function fetchFullDatabase(id) {
   try {
     const res = await notion.databases.query({ database_id: id });
-    return res.results.map(p => ({ id: p.id, ...parseProperties(p.properties) }));
+    return res.results.map(p => parseProperties(p.properties));
   } catch (e) { return []; }
 }
 
@@ -76,37 +75,40 @@ async function fetchAirtableData(tableName) {
   try {
     const records = await airtableBase(tableName).select().all();
     return records.map(r => ({ id: r.id, ...r.fields }));
-  } catch (e) { return []; }
+  } catch (e) { 
+    console.log(`Airtable Fehler bei ${tableName}:`, e.message);
+    return []; 
+  }
 }
 
-// --- LABELCOPY ZUSATZ ---
+// --- LABELCOPY LOGIK (HINZUGEFÜGT) ---
 
 function buildNotionProps(data) {
-    const props = {};
-    const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
-    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
-    fields.forEach(f => { 
-        if (data[f] || data[f.toLowerCase()]) {
-            let val = data[f] || data[f.toLowerCase()];
-            if (typeof val === 'object') val = JSON.stringify(val);
-            props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
-        }
-    });
-    return props;
+  const props = {};
+  const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+  if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
+  fields.forEach(f => { 
+    if (data[f] || data[f.toLowerCase()]) {
+      let val = data[f] || data[f.toLowerCase()];
+      if (typeof val === 'object') val = JSON.stringify(val);
+      props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
+    }
+  });
+  return props;
 }
 
 async function showFullMask(chatId, pageId) {
-    const page = await notion.pages.retrieve({ page_id: pageId });
-    const props = parseProperties(page.properties);
-    const fields = ["Artist", "Titel", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
-    let msg = `📋 **Labelcopy: ${props.Artist || "..."} - ${props.Titel || "..."}**\n`;
-    msg += `----------------------------------\n`;
-    fields.forEach(f => {
-        const val = props[f] || "";
-        msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
-    });
-    msg += `----------------------------------\n👉 *Infos schreiben, "Exportieren" oder "Fertig" sagen.*`;
-    return msg;
+  const page = await notion.pages.retrieve({ page_id: pageId });
+  const props = parseProperties(page.properties);
+  const fields = ["Artist", "Titel", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+  let msg = `📋 **Labelcopy: ${props.Artist || "..."} - ${props.Titel || "..."}**\n`;
+  msg += `----------------------------------\n`;
+  fields.forEach(f => {
+    const val = props[f] || "";
+    msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
+  });
+  msg += `----------------------------------\n👉 Schick mir weitere Infos oder sag "Fertig".`;
+  return msg;
 }
 
 // --- CORE LOGIK ---
@@ -115,16 +117,17 @@ async function handleChat(chatId, text) {
   const textLower = text.toLowerCase();
   let session = activeSession.get(chatId);
 
+  // SESSION STOPP
   if (session && (textLower === "fertig" || textLower === "session löschen")) {
     activeSession.delete(chatId);
-    return "Check. Session geschlossen. Ich bin wieder im normalen Modus.";
+    return "Check. Labelcopy-Session geschlossen. Ich bin wieder im normalen Modus.";
   }
 
   const fetchSafely = async (id) => {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
 
-  // 1:1 Kopie des Fetchings aus deiner Basis
+  // Laden aller Daten (Exakt aus Basis)
   const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
@@ -136,11 +139,12 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_CALENDARS)
   ]);
 
-  // LABELCOPY LOGIK (Nur als Zusatz)
+  // LC RECALL
   const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten"];
   if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session) {
-    const lcs = await fetchFullDatabase(DB_LABELCOPIES);
-    const found = lcs.find(l => (l.Titel && textLower.includes(l.Titel.toLowerCase())) || (l.Artist && textLower.includes(l.Artist.toLowerCase())));
+    const lcs = await notion.databases.query({ database_id: DB_LABELCOPIES });
+    const results = lcs.results.map(p => ({ id: p.id, ...parseProperties(p.properties) }));
+    const found = results.find(l => (l.Titel && textLower.includes(l.Titel.toLowerCase())) || (l.Artist && textLower.includes(l.Artist.toLowerCase())));
     if (found) {
       activeSession.set(chatId, { step: "confirm_recall", pendingPageId: found.id, artist: found.Artist, title: found.Titel });
       return `Ich habe eine Labelcopy gefunden: **${found.Artist} - ${found.Titel}**. \n\nMöchtest du an dieser weiterarbeiten? (Ja/Nein)`;
@@ -148,17 +152,19 @@ async function handleChat(chatId, text) {
   }
 
   if (session && session.step === "confirm_recall") {
-    if (textLower.includes("ja") || textLower.includes("yes")) {
+    if (textLower.includes("ja") || textLower.includes("yes") || textLower.includes("genau")) {
       activeSession.set(chatId, { step: "active", pageId: session.pendingPageId, artist: session.artist, title: session.title });
       return await showFullMask(chatId, session.pendingPageId);
     } else { activeSession.delete(chatId); return "Suche abgebrochen."; }
   }
 
+  // LC TRIGGER
   if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
     activeSession.set(chatId, { step: "awaiting_artist" });
     return "Alles klar! Welcher **Künstler** soll es sein?";
   }
 
+  // LC SESSION AKTIV
   if (session) {
     if (session.step === "awaiting_artist") {
       session.artist = text; session.step = "awaiting_title";
@@ -167,84 +173,94 @@ async function handleChat(chatId, text) {
     }
     if (session.step === "awaiting_title") {
       session.title = text; session.step = "active";
-      const newPage = await notion.pages.create({ parent: { database_id: DB_LABELCOPIES }, properties: buildNotionProps({ Artist: session.artist, Titel: session.title }) });
+      const configs = await fetchFullDatabase(DB_CONFIG);
+      const rules = configs.find(c => c.Key === "Labelcopy Rules")?.Value || "";
+      const extraction = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [{ role: "system", content: `Regeln: ${rules}. Wenn Artist "${session.artist}" ist, fülle Presets. Gib JSON.` }, { role: "user", content: `Artist: ${session.artist}, Titel: ${session.title}` }],
+        response_format: { type: "json_object" }
+      });
+      const presetData = JSON.parse(extraction.choices[0].message.content);
+      const newPage = await notion.pages.create({ parent: { database_id: DB_LABELCOPIES }, properties: buildNotionProps({ ...presetData, Artist: session.artist, Titel: session.title }) });
       session.pageId = newPage.id; activeSession.set(chatId, session);
       return await showFullMask(chatId, newPage.id);
     }
     
     const extraction = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [{ role: "system", content: "Extrahiere Labelcopy Felder als JSON. 'Abmischung' -> Mixed by etc. Gib JSON." }, { role: "user", content: text }],
-        response_format: { type: "json_object" }
+      model: "gpt-4o",
+      messages: [{ role: "system", content: "Extrahiere Labelcopy Felder als JSON. Sei flexibel. Gib JSON." }, { role: "user", content: text }],
+      response_format: { type: "json_object" }
     });
     const updateData = JSON.parse(extraction.choices[0].message.content);
     if (Object.keys(updateData).length > 0) {
-        await notion.pages.update({ page_id: session.pageId, properties: buildNotionProps(updateData) });
-        return await showFullMask(chatId, session.pageId);
+      await notion.pages.update({ page_id: session.pageId, properties: buildNotionProps(updateData) });
+      return await showFullMask(chatId, session.pageId);
     }
   }
 
-  // --- KALENDER LOGIK (1:1 AUS DEINER BASIS) ---
+  // --- KALENDER LOGIK (Exakt aus Basis) ---
   const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
   if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
     try {
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
-        messages: [{ role: "system", content: `Kalender-Assistent. JSON exportieren. Künstler: ${calendarList.map(c => c.Name).join(", ")}.` }, { role: "user", content: text }],
+        messages: [
+          { role: "system", content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}. Künstler: ${calendarList.map(c => c.Name).join(", ")}. Gib NUR JSON zurück.` },
+          { role: "user", content: text }
+        ],
         response_format: { type: "json_object" }
       });
       const data = JSON.parse(extraction.choices[0].message.content);
       const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
-      const calId = artistEntry?.["Calendar ID"] || "mate.spellenberg.umusic@gmail.com";
-      
-      if (data.type === "read" || textLower.includes("wie sieht")) {
-        const response = await calendar.events.list({ calendarId: calId, timeMin: new Date().toISOString(), singleEvents: true, orderBy: "startTime" });
+      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
+      const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
+      const formatForGoogle = (dateStr) => (!dateStr ? new Date().toISOString() : (dateStr.length === 19 ? `${dateStr}Z` : dateStr));
+
+      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("zeit")) {
+        const response = await calendar.events.list({ calendarId: calId, timeMin: formatForGoogle(data.start_iso), timeMax: formatForGoogle(data.end_iso), singleEvents: true, orderBy: "startTime" });
         const events = response.data.items;
-        if (!events || events.length === 0) return `📅 Keine Termine für **${artistEntry?.Name || "Mate"}** gefunden.`;
-        let list = `📅 **Termine für ${artistEntry?.Name || "Mate"}:**\n`;
-        events.forEach(e => { list += `• ${new Date(e.start.dateTime || e.start.date).toLocaleString('de-DE')}: **${e.summary}**\n`; });
+        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
+        let list = `📅 **Termine für ${artistName}:**\n`;
+        events.forEach(e => {
+          const start = new Date(e.start.dateTime || e.start.date);
+          const end = new Date(e.end.dateTime || e.end.date);
+          const dateStr = start.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+          if ((end - start) > 24 * 60 * 60 * 1000) { list += `• ${dateStr} bis ${end.toLocaleString('de-DE', { day: '2-digit', month: '2-digit' })}: **${e.summary}** 🗓️\n`; }
+          else { list += `• ${dateStr} (${!e.start.dateTime ? "Ganztägig" : start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}): **${e.summary}**\n`; }
+        });
         return list;
       } else {
-        await calendar.events.insert({ calendarId: calId, resource: { summary: data.title, start: { dateTime: data.start_iso, timeZone: "Europe/Berlin" }, end: { dateTime: data.end_iso || new Date(new Date(data.start_iso).getTime() + 3600000).toISOString(), timeZone: "Europe/Berlin" } } });
-        return `✅ Termin eingetragen.`;
+        const event = { summary: data.title || "Neuer Termin", start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" }, end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" }, attendees: data.attendees ? data.attendees.map(email => ({ email })) : [] };
+        await calendar.events.insert({ calendarId: calId, resource: event, sendUpdates: data.attendees ? "all" : "none" });
+        let msg = `✅ Termin eingetragen für **${artistName}**\n📌 ${data.title}\n⏰ ${new Date(formatForGoogle(data.start_iso)).toLocaleString('de-DE')}`;
+        if (data.attendees && data.attendees.length > 0) msg += `\n✉️ Einladungen an: ${data.attendees.join(", ")}`;
+        return msg;
       }
     } catch (err) { return "❌ Kalender-Fehler."; }
   }
 
-  // --- AIRTABLE SAVE (1:1 AUS DEINER BASIS) ---
+  // --- AIRTABLE SAVE (Exakt aus Basis) ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
   if (triggerWords.some(word => text.toLowerCase().includes(word)) && !text.toLowerCase().includes("termin")) {
     try {
-      const extraction = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [{ role: "system", content: `Extrahiere Kontaktdaten. JSON Key: "table" (Artist Pitch/Label Pitch).` }, { role: "user", content: text }],
-        response_format: { type: "json_object" }
-      });
+      const extraction = await openai.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: `Du bist ein Daten-Extraktor. Extrahiere Kontaktdaten. Gib NUR JSON zurück.` }, { role: "user", content: text }], response_format: { type: "json_object" } });
       const result = JSON.parse(extraction.choices[0].message.content);
       const tableName = result.table || (text.toLowerCase().includes("label") ? "Label Pitch" : "Artist Pitch");
-      await airtableBase(tableName).create([{ fields: result }]);
-      return `✅ Erfolgreich gespeichert in ${tableName}.`;
-    } catch (error) { return "❌ Airtable Fehler."; }
+      let finalFields = {};
+      if (tableName === "Artist Pitch") { ["Artist_Name", "Contact_FirstName", "Contact_LastName", "Email", "Genre", "Prio"].forEach(f => { if (result[f]) finalFields[f] = result[f]; }); }
+      else { ["Label_Name", "Contact_FirstName", "Contact_LastName", "Email"].forEach(f => { if (result[f]) finalFields[f] = result[f]; }); }
+      await airtableBase(tableName).create([{ fields: finalFields }]);
+      return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${finalFields.Contact_FirstName || ""} ${finalFields.Contact_LastName || ""}\n📧 ${finalFields.Email}`;
+    } catch (error) { return "❌ Fehler beim Speichern in Airtable."; }
   }
 
-  // --- NORMALER CHAT (1:1 AUS DEINER BASIS) ---
+  // --- NORMALER CHAT / PITCH LOGIK (Original Tonalität) ---
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 8) history.shift();
   const pitchRules = config.find(c => c.Key === "Pitch_Rules")?.Value || "";
-  const systemMessage = { 
-    role: "system", 
-    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und präzise.
-    ### PITCH REGELN ###
-    ${pitchRules}
-    ### WISSENSDATENBANK ###
-    - PUBLISHING: ${JSON.stringify(publishing)}
-    - ARTIST PITCH: ${JSON.stringify(artistPitch)}
-    - LABEL PITCH: ${JSON.stringify(labelPitch)}
-    - ARTIST INFOS: ${JSON.stringify(artistInfos)}
-    - BIOS: ${JSON.stringify(bios)}
-    - STUDIOS: ${JSON.stringify(studios)}` 
-  };
+  const sonstigeRegeln = config.filter(c => c.Key !== "Pitch_Rules");
+  const systemMessage = { role: "system", content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und präzise.\n\n### PITCH REGELN ###\n${pitchRules}\n\n### RICHTLINIEN ###\n${JSON.stringify(sonstigeRegeln)}\n\n### WISSEN ###\n- PUBLISHING: ${JSON.stringify(publishing)}\n- ARTIST PITCH: ${JSON.stringify(artistPitch)}\n- LABEL PITCH: ${JSON.stringify(labelPitch)}\n- ARTIST INFOS: ${JSON.stringify(artistInfos)}\n- BIOS: ${JSON.stringify(bios)}\n- STUDIOS: ${JSON.stringify(studios)}` };
   const completion = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMessage, ...history] });
   const answer = completion.choices[0].message.content;
   history.push({ role: "assistant", content: answer });
@@ -252,7 +268,8 @@ async function handleChat(chatId, text) {
   return answer;
 }
 
-// --- BOT EVENTS --- (IDENTISCH ZU BASIS)
+// --- BOT EVENTS & SERVER ---
+
 bot.on("message", async (msg) => {
   if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
   const answer = await handleChat(msg.chat.id, msg.text);
@@ -273,7 +290,7 @@ bot.on("voice", async (msg) => {
       const answer = await handleChat(chatId, transcription.text);
       await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
     });
-  } catch (err) { await bot.sendMessage(chatId, "Fehler."); }
+  } catch (err) { await bot.sendMessage(chatId, "Fehler beim Audio."); }
 });
 
 app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
