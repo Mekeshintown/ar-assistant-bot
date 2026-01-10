@@ -113,7 +113,6 @@ async function showFullMask(chatId, pageId) {
     const props = parseProperties(page.properties);
     const fields = ["Artist", "Titel", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
     
-    // NEU: Mapping für schönere Namen im Chat
     const displayNames = {
         "Splits": "Splits und Pub Infos (Name/Prozent/Publisher/IPI/Contact)"
     };
@@ -122,7 +121,7 @@ async function showFullMask(chatId, pageId) {
     msg += `----------------------------------\n`;
     fields.forEach(f => {
         const val = props[f] || "";
-        const label = displayNames[f] || f; // Benutze schönen Namen wenn vorhanden
+        const label = displayNames[f] || f; 
         msg += val.trim() !== "" ? `✅ **${label}:** ${val}\n` : `❌ **${label}:** _noch leer_\n`;
     });
     msg += `----------------------------------\n`;
@@ -157,7 +156,6 @@ async function generateWordDoc(chatId, pageId) {
                 new Paragraph({ text: "Produced by: " + (lc["Video Produced by"] || "") }),
                 new Paragraph({ text: "Directed by: " + (lc["Video Directed by"] || "") }),
 
-                // NEU: Hier der genaue Text für die Splits-Überschrift
                 new Paragraph({ text: "Splits und Pub Infos (Name/Prozent/Publisher/IPI/Contact)", bold: true, spacing: { before: 400, after: 100 } }),
                 new Paragraph({ text: "Please assign which writer belongs to which publisher. If no publisher, provide management contact.", italics: true, size: 20 }),
 
@@ -172,7 +170,6 @@ async function generateWordDoc(chatId, pageId) {
                             ]
                         }),
                         ...tableRowsData.map(line => {
-                            // Splits Logic: "|" trennt die Spalten
                             const parts = line.split("|").map(p => p.trim());
                             return new TableRow({
                                 children: [
@@ -205,6 +202,18 @@ async function handleChat(chatId, text) {
 
   const textLower = text.toLowerCase();
   let session = activeSession.get(chatId);
+
+  // --- DATEN LADEN (WICHTIG für Artist Infos & Fix für triggerWords) ---
+  const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
+    fetchSafely(DB_CONFIG),
+    fetchSafely(DB_STUDIOS),
+    fetchSafely(DB_BIOS),
+    fetchSafely(DB_ARTIST_INFOS),
+    fetchAirtableData('Artist Pitch'),
+    fetchAirtableData('Label Pitch'),
+    fetchSafely(DB_PUBLISHING),
+    fetchSafely(DB_CALENDARS)
+  ]);
 
   // -------------------------------------------------------------
   // A) KALENDER BESTÄTIGUNGS-LOOP
@@ -241,7 +250,7 @@ async function handleChat(chatId, text) {
       activeSession.delete(chatId);
       return "Check. Labelcopy-Session geschlossen.";
   }
-
+  // ... (Labelcopy Logic wie zuvor) ...
   const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden"];
   if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session && (textLower.includes("lc") || textLower.includes("labelcopy") || textLower.includes("song"))) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
@@ -318,20 +327,11 @@ async function handleChat(chatId, text) {
       }
   }
 
-  const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
-    fetchSafely(DB_CONFIG),
-    fetchSafely(DB_STUDIOS),
-    fetchSafely(DB_BIOS),
-    fetchSafely(DB_ARTIST_INFOS),
-    fetchAirtableData('Artist Pitch'),
-    fetchAirtableData('Label Pitch'),
-    fetchSafely(DB_PUBLISHING),
-    fetchSafely(DB_CALENDARS)
-  ]);
-
   // -------------------------------------------------------------
-  // C) SESSION ZUSAMMENFASSUNG
+  // C) SESSION ZUSAMMENFASSUNG (Initial & UPDATE LOGIC)
   // -------------------------------------------------------------
+  
+  // 1. Initialer Aufruf
   if (textLower.includes("sessionzusammenfassung") || textLower.includes("zusammenfassung")) {
       let studioInfo = { name: "", address: "", bell: "", contact: "" };
       const foundStudio = studios.find(s => textLower.includes(s.Name.toLowerCase()));
@@ -367,6 +367,47 @@ async function handleChat(chatId, text) {
       const output = `Session: ${artists}\nDate: ${date}\nStart: ${time}\nStudio: ${studioInfo.name}\nAddress: ${studioInfo.address}\nBell: ${studioInfo.bell}\nContact: ${studioInfo.contact}`;
       return output;
   }
+
+  // 2. SMART UPDATES (Verbesserte Logik für "Artist Infos" Tabelle)
+  if (lastSessionData.has(chatId) && !textLower.includes("kalender") && !textLower.includes("trag") && !textLower.includes("session")) {
+      
+      const currentSession = lastSessionData.get(chatId);
+      
+      // HIER LIEGT DIE MAGIE: Wir mappen jetzt korrekt auf "Telefonnummer"
+      // Außerdem flexibel genug für zukünftige Spalten (Email etc.)
+      const artistContacts = artistInfos.map(a => {
+          // Wir suchen nach Nummer, Telefonnummer oder Phone
+          const number = a.Telefonnummer || a.Phone || a.Telefon || "Keine Nr";
+          return `${a.Name} (${number})`;
+      }).join(", ");
+
+      const updateAttempt = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+              { role: "system", content: `Du verwaltest Session-Daten.
+              Aktuelle Daten: ${JSON.stringify(currentSession)}.
+              Verfügbare Kontakte (aus Notion): ${artistContacts}.
+              
+              Aufgabe:
+              1. Analysiere den User-Input. Will er Contact, Time, Date, Studio oder Artist ändern?
+              2. Wenn er einen Namen nennt (z.B. "Jonas"), suche in den Kontakten nach der Nummer.
+              3. Gib das KOMPLETTE aktualisierte JSON zurück (artists, date, time, studioInfo: {name, address, bell, contact}).
+              4. Wenn der Input gar nicht dazu passt, gib leeres JSON {} zurück.` },
+              { role: "user", content: text }
+          ],
+          response_format: { type: "json_object" }
+      });
+
+      const updated = JSON.parse(updateAttempt.choices[0].message.content);
+      
+      if (Object.keys(updated).length > 0) {
+           lastSessionData.set(chatId, updated);
+           const s = updated;
+           const output = `Session: ${s.artists}\nDate: ${s.date}\nStart: ${s.time}\nStudio: ${s.studioInfo.name}\nAddress: ${s.studioInfo.address}\nBell: ${s.studioInfo.bell}\nContact: ${s.studioInfo.contact}`;
+           return output;
+      }
+  }
+
 
  // -------------------------------------------------------------
  // D) KALENDER TRIGGER
@@ -449,6 +490,9 @@ async function handleChat(chatId, text) {
   }
 
   // --- AIRTABLE & PITCH ---
+  // FIX: Triggerwords jetzt korrekt definiert
+  const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
+  
   if (triggerWords.some(word => text.toLowerCase().includes(word))) { return "Airtable Save (Simulated)"; }
 
   let history = chatContext.get(chatId) || [];
