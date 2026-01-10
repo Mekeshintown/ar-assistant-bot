@@ -8,9 +8,8 @@ const axios = require("axios");
 const fs = require("fs");
 const Airtable = require("airtable");
 const { google } = require("googleapis"); 
+// NEU: Für den Word-Export
 const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun } = require("docx");
-
-require('dotenv').config(); // Sicherstellen, dass env geladen wird
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
@@ -35,6 +34,7 @@ const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0";
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
 const DB_CALENDARS = "2e3c841ccef9800d96f2c38345eeb2bc"; 
+// NEU: Labelcopy DB ID
 const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc";
 const AIRTABLE_BASE_ID = "appF535cRZRho6btT";
 
@@ -44,9 +44,8 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
 const chatContext = new Map();
+// NEU: Session Management für Labelcopy
 const activeSession = new Map(); 
-// NEU: Map für Kalender-Bestätigungen
-const pendingCalendar = new Map();
 
 const app = express();
 app.use(express.json());
@@ -95,10 +94,13 @@ function buildNotionProps(data) {
     
     if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
     
+    // Iteriere über alle Felder und mappe sie
     notionFields.forEach(f => { 
+        // Prüfe ob Daten da sind (auch lowercase Key Support)
         const incomingValue = data[f] || data[f.toLowerCase()];
         if (incomingValue !== undefined && incomingValue !== null) {
             let val = incomingValue;
+            // Falls GPT ein Objekt/Array schickt, mache es zum String
             if (typeof val === 'object') {
                 val = Object.entries(val).map(([k, v]) => `${k}: ${v}`).join("\n");
             }
@@ -117,10 +119,11 @@ async function showFullMask(chatId, pageId) {
     msg += `----------------------------------\n`;
     fields.forEach(f => {
         const val = props[f] || "";
+        // Emoji Logik: Haken wenn voll, Kreuz wenn leer
         msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
     });
     msg += `----------------------------------\n`;
-    msg += `👉 *Infos einfach hier reinschreiben.* \n`;
+    msg += `👉 *Infos einfach hier reinschreiben (z.B. "Mix von Tobias").* \n`;
     msg += `👉 *Sagen Sie **"Exportieren"**, um das Word-File zu erhalten.*\n`;
     msg += `👉 *Sagen Sie **"Fertig"**, um die Session zu schließen.*`;
     return msg;
@@ -170,50 +173,17 @@ async function handleChat(chatId, text) {
   const textLower = text.toLowerCase();
   let session = activeSession.get(chatId);
 
-  // -------------------------------------------------------------
-  // A) KALENDER BESTÄTIGUNGS-LOOP (Priorität VOR allem anderen)
-  // -------------------------------------------------------------
-  if (pendingCalendar.has(chatId)) {
-      const pendingData = pendingCalendar.get(chatId);
-
-      if (textLower.includes("ja") || textLower.includes("bestätigen") || textLower.includes("ok")) {
-          try {
-             // Der echte API Call passiert erst hier
-             await calendar.events.insert({ 
-                 calendarId: pendingData.calId, 
-                 resource: pendingData.event,
-                 sendUpdates: pendingData.sendUpdates
-             });
-             
-             pendingCalendar.delete(chatId); // Reset
-             return `✅ Termin verbindlich eingetragen: **${pendingData.event.summary}**`;
-          } catch (e) {
-             console.error(e);
-             pendingCalendar.delete(chatId);
-             return "❌ Fehler beim Eintragen in Google Calendar.";
-          }
-      } 
-      else if (textLower.includes("nein") || textLower.includes("abbruch")) {
-          pendingCalendar.delete(chatId); // Reset
-          return "Alles klar, Vorgang abgebrochen. Nichts eingetragen.";
-      }
-      else {
-          // Falls user was anderes fragt während Bestätigung offen ist -> Abbruch oder Hinweis?
-          // Wir lassen es erstmal offen und nehmen an, es ist eine Zwischenfrage, aber hier brechen wir sicherheitshalber ab um Chaos zu vermeiden
-          // pendingCalendar.delete(chatId); 
-      }
-  }
-
-  // -------------------------------------------------------------
-  // B) LABELCOPY SESSION (Bestehender Code)
-  // -------------------------------------------------------------
+  // --- 1. LABELCOPY SESSION STEUERUNG (VOR ALLEM ANDEREN) ---
   
+  // Abbruch
   if (session && (textLower === "fertig" || textLower === "session löschen")) {
       activeSession.delete(chatId);
       return "Check. Labelcopy-Session geschlossen. Ich bin wieder im normalen Modus.";
   }
 
+  // Recall / Laden
   const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden"];
+  // Nur wenn KEINE Session aktiv ist und LC-Keywords fallen
   if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session && (textLower.includes("lc") || textLower.includes("labelcopy") || textLower.includes("song"))) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
         const found = lcs.find(l => (l.Titel && textLower.includes(l.Titel.toLowerCase())) || (l.Artist && textLower.includes(l.Artist.toLowerCase())));
@@ -223,6 +193,7 @@ async function handleChat(chatId, text) {
         }
   }
 
+  // Recall Bestätigung
   if (session && session.step === "confirm_recall") {
       if (textLower.includes("ja") || textLower.includes("genau") || textLower.includes("yes")) {
           activeSession.set(chatId, { step: "active", pageId: session.pendingPageId, artist: session.artist, title: session.title });
@@ -233,11 +204,13 @@ async function handleChat(chatId, text) {
       }
   }
 
+  // Neue LC anlegen
   if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
       activeSession.set(chatId, { step: "awaiting_artist" });
       return "Alles klar! Welcher **Künstler** soll es sein?";
   }
 
+  // Aktiver LC Workflow
   if (session) {
       if (session.step === "awaiting_artist") {
           session.artist = text; session.step = "awaiting_title";
@@ -247,6 +220,7 @@ async function handleChat(chatId, text) {
       
       if (session.step === "awaiting_title") {
           session.title = text; session.step = "active";
+          // Presets laden (Optional, falls Config da ist)
           const configs = await fetchFullDatabase(DB_CONFIG);
           const rules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
           
@@ -273,10 +247,11 @@ async function handleChat(chatId, text) {
            return res;
       }
       
+      // Smart Input (Update der Felder)
       const extraction = await openai.chat.completions.create({
           model: "gpt-4o",
           messages: [
-              { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. Sei flexibel bei Begriffen. Gib NUR JSON zurück." }, 
+              { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. Sei flexibel bei Begriffen (Abmischung=Mixed by etc.). 'Time' und 'Splits' sind Strings. Gib NUR JSON zurück." }, 
               { role: "user", content: text }
           ],
           response_format: { type: "json_object" }
@@ -287,9 +262,12 @@ async function handleChat(chatId, text) {
           await notion.pages.update({ page_id: session.pageId, properties: buildNotionProps(updateData) });
           return await showFullMask(chatId, session.pageId);
       }
+      // Falls nichts erkannt wurde, mache weiter im normalen Chat (Fallback)
   }
 
-  // --- DATEN LADEN FÜR RESTLICHE FUNKTIONEN ---
+  // --- 2. BASIS LOGIK (KALENDER, AIRTABLE, CHAT) ---
+  
+  // Laden aller Daten (Original)
   const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
@@ -301,68 +279,27 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_CALENDARS)
   ]);
 
-  // -------------------------------------------------------------
-  // C) SESSION ZUSAMMENFASSUNG (STRICT FORMAT / NO CALENDAR)
-  // -------------------------------------------------------------
-  if (textLower.includes("sessionzusammenfassung") || textLower.includes("zusammenfassung")) {
-      // 1. Studio Matching aus DB
-      let studioInfo = { name: "", address: "", bell: "", contact: "" };
-      const foundStudio = studios.find(s => textLower.includes(s.Name.toLowerCase()));
-      if (foundStudio) {
-          studioInfo = {
-              name: foundStudio.Name || "",
-              address: foundStudio.Address || foundStudio.Adresse || "",
-              bell: foundStudio.Bell || foundStudio.Klingel || "",
-              contact: foundStudio.Contact || foundStudio.Kontakt || ""
-          };
-      }
-
-      // 2. Datum & Uhrzeit Parsing (Manuell oder via Regex, um Halluzinationen zu vermeiden)
-      const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.(\d{2,4})?/);
-      let date = dateMatch ? dateMatch[0] : "";
-      
-      const timeMatch = text.match(/\d{1,2}:\d{2}/);
-      // REGEL: Wenn keine Uhrzeit -> 12:00
-      let time = timeMatch ? timeMatch[0] : "12:00";
-
-      // 3. Artist Parsing (Simpel: Alles was nicht Keyword/Datum/Studio ist)
-      // Um es sauber zu halten, nutzen wir hier kurz GPT nur für die Namens-Extraktion, 
-      // befehlen ihm aber, keine Fakten zu erfinden.
-      const nameExtract = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-              { role: "system", content: "Extrahiere NUR die Artist Namen (Artist A x Artist B) aus dem Text. Ignoriere Datum, Studio, 'Sessionzusammenfassung'. Gib nur den String zurück." },
-              { role: "user", content: text }
-          ]
-      });
-      let artists = nameExtract.choices[0].message.content.replace(/['"]+/g, '');
-
-      // 4. Output Generierung (Striktes Format)
-      const output = `Session: ${artists} Date: ${date} Start: ${time} Studio: ${studioInfo.name} Address: ${studioInfo.address} Bell: ${studioInfo.bell} Contact: ${studioInfo.contact}`;
-      
-      return output;
-  }
-
- // -------------------------------------------------------------
- // D) KALENDER TRIGGER (NUR BEI EXPLIZITEM BEFEHL)
- // -------------------------------------------------------------
-  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting"];
-  const actionTriggers = ["trage", "mache", "erstelle", "buche"];
+ // --- KALENDER LOGIK (Original) ---
+  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
   
-  const isCalendarRead = calendarTriggers.some(w => textLower.includes(w)) && (textLower.includes("wann") || textLower.includes("was") || textLower.includes("zeig"));
-  const isCalendarWrite = calendarTriggers.some(w => textLower.includes(w)) && actionTriggers.some(a => textLower.includes(a));
-
-  if (isCalendarRead || isCalendarWrite) {
+  if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
     try {
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           { 
             role: "system", 
-            content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE')}.
+            content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
             Künstler: ${calendarList.map(c => c.Name).join(", ")}.
-            Aufgabe: Gib JSON zurück.
-            Fields: type ("read" oder "write"), artist, start_iso, end_iso, title, attendees (array).` 
+            
+            Aufgabe:
+            1. type: "read" (Abfragen) oder "write" (Eintragen).
+            2. artist: Name aus der Liste.
+            3. start_iso & end_iso: ISO-Strings (YYYY-MM-DDTHH:mm:ss).
+            4. title: Titel (nur write).
+            5. attendees: Extrahiere E-Mail-Adressen, falls der User jemanden einladen will (als Array).
+            
+            Gib NUR JSON zurück.` 
           },
           { role: "user", content: text }
         ],
@@ -379,8 +316,7 @@ async function handleChat(chatId, text) {
         return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
       };
 
-      // --- LESE MODUS (Sofort ausführen) ---
-      if (data.type === "read" || isCalendarRead) {
+      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("zeit")) {
         const response = await calendar.events.list({
           calendarId: calId,
           timeMin: formatForGoogle(data.start_iso),
@@ -388,56 +324,99 @@ async function handleChat(chatId, text) {
           singleEvents: true,
           orderBy: "startTime",
         });
-        // ... (Dein bestehender Lese-Code hier, vereinfacht für Übersicht) ...
+
         const events = response.data.items;
-        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
-        return events.map(e => `• ${e.summary} (${new Date(e.start.dateTime||e.start.date).toLocaleString()})`).join("\n");
+        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** im Zeitraum gefunden.`;
+
+        let list = `📅 **Termine für ${artistName}:**\n`;
+        events.forEach(e => {
+          const start = new Date(e.start.dateTime || e.start.date);
+          const end = new Date(e.end.dateTime || e.end.date);
+          const dateStr = start.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+          const isAllDay = !e.start.dateTime;
+          const isMultiDay = (end - start) > 24 * 60 * 60 * 1000;
+
+          if (isMultiDay) {
+            const endStr = end.toLocaleString('de-DE', { day: '2-digit', month: '2-digit' });
+            list += `• ${dateStr} bis ${endStr}: **${e.summary}** 🗓️\n`;
+          } else {
+            const timeStr = isAllDay ? "Ganztägig" : start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+            list += `• ${dateStr} (${timeStr}): **${e.summary}**\n`;
+          }
+        });
+        return list;
       } 
-      
-      // --- SCHREIB MODUS (Erst Fragen!) ---
       else {
-        // Daten vorbereiten, aber NICHT senden
-        const eventResource = {
+        const event = {
           summary: data.title || "Neuer Termin",
           start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
           end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
           attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
         };
-        const sendUpdates = data.attendees ? "all" : "none";
 
-        // In Pending Map speichern
-        pendingCalendar.set(chatId, { calId, event: eventResource, sendUpdates });
+        await calendar.events.insert({ 
+          calendarId: calId, 
+          resource: event,
+          sendUpdates: data.attendees ? "all" : "none" 
+        });
 
-        // User fragen
-        const output = `Ich habe folgenden Termin vorbereitet:\n\n**${eventResource.summary}**\nStart: ${new Date(eventResource.start.dateTime).toLocaleString()}\nKalender: ${artistName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
-        return output;
+        let msg = `✅ Termin eingetragen für **${artistName}**\n📌 ${data.title}\n⏰ ${new Date(formatForGoogle(data.start_iso)).toLocaleString('de-DE')}`;
+        if (data.attendees && data.attendees.length > 0) msg += `\n✉️ Einladungen an: ${data.attendees.join(", ")}`;
+        return msg;
       }
 
     } catch (err) {
       console.error("Calendar Error:", err);
-      return "❌ Kalender-Fehler.";
+      return "❌ Kalender-Fehler. Bitte prüfe Künstler und Zeitraum.";
     }
   }
   
-  // --- AIRTABLE SAVE (Bestehend) ---
+  // --- AIRTABLE SAVE (Original) ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
-  if (triggerWords.some(word => text.toLowerCase().includes(word))) {
-      // (Dein bestehender Airtable Code...)
-       try {
+  if (triggerWords.some(word => text.toLowerCase().includes(word)) && !text.toLowerCase().includes("termin")) {
+    try {
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: `Extrahiere Kontaktdaten für Airtable (Artist Pitch / Label Pitch). JSON.` },
+          { 
+            role: "system", 
+            content: `Du bist ein Daten-Extraktor. Extrahiere Kontaktdaten.
+            Mögliche Felder: Artist_Name, Contact_FirstName, Contact_LastName, Email, Label_Name, Genre, Prio.
+            Gib NUR ein valides JSON Objekt zurück.
+            Entscheide ob es in die Tabelle "Artist Pitch" oder "Label Pitch" gehört (Key: "table").` 
+          },
           { role: "user", content: text }
         ],
         response_format: { type: "json_object" }
       });
-      // ... vereinfacht, da Logik bekannt ...
-      return "✅ (Simulation) Airtable Eintrag gespeichert."; 
-    } catch (e) { return "Fehler Airtable"; }
+
+      const result = JSON.parse(extraction.choices[0].message.content);
+      const tableName = result.table || (text.toLowerCase().includes("label") ? "Label Pitch" : "Artist Pitch");
+      
+      let finalFields = {};
+      if (tableName === "Artist Pitch") {
+        if (result.Artist_Name) finalFields.Artist_Name = result.Artist_Name;
+        if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
+        if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
+        if (result.Email) finalFields.Email = result.Email;
+        if (result.Genre) finalFields.Genre = result.Genre;
+        if (result.Prio) finalFields.Prio = result.Prio;
+      } else {
+        if (result.Label_Name) finalFields.Label_Name = result.Label_Name;
+        if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
+        if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
+        if (result.Email) finalFields.Email = result.Email;
+      }
+
+      await airtableBase(tableName).create([{ fields: finalFields }]);
+      return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${finalFields.Contact_FirstName || ""} ${finalFields.Contact_LastName || ""}\n📧 ${finalFields.Email}`;
+    } catch (error) {
+      console.error("Airtable Save Error:", error);
+      return "❌ Fehler beim Speichern in Airtable.";
+    }
   }
 
-  // --- NORMALER CHAT / PITCH LOGIK (Bestehend) ---
+  // --- NORMALER CHAT / PITCH LOGIK (Original) ---
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 8) history.shift();
@@ -447,9 +426,29 @@ async function handleChat(chatId, text) {
 
   const systemMessage = { 
     role: "system", 
-    content: `Du bist der A&R Assistent.
-    PITCH REGELN: ${pitchRules}
-    DATEN: ${JSON.stringify(sonstigeRegeln)}` 
+    content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und präzise.
+    
+    ### UNBEDINGT BEACHTEN: PITCH REGELN ###
+    ${pitchRules}
+
+    ### WEITERE RICHTLINIEN ###
+    ${JSON.stringify(sonstigeRegeln)}
+
+    ### WISSENSDATENBANK ###
+    - PUBLISHING (IPI Nummern, Verlage, Anteile): ${JSON.stringify(publishing)}
+    - ARTIST PITCH (Emails/Prio/Genre): ${JSON.stringify(artistPitch)}
+    - LABEL PITCH (A&Rs/Label): ${JSON.stringify(labelPitch)}
+    - ARTIST INFOS: ${JSON.stringify(artistInfos)}
+    - BIOS: ${JSON.stringify(bios)}
+    - STUDIOS: ${JSON.stringify(studios)}
+
+    DEINE AUFGABEN:
+    1. Wenn nach IPI Nummern, Verlagen oder Song-Anteilen gefragt wird, schau zuerst in PUBLISHING.
+    2. Wenn nach Emails/Manager gefragt wird, schau in ARTIST PITCH. Nenne Vorname + Email.
+    3. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
+    4. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
+    5. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten und den Pitch_Rules aus der Config.
+    6. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.` 
   };
 
   const completion = await openai.chat.completions.create({
