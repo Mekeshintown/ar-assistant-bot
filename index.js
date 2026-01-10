@@ -38,7 +38,7 @@ const activeSession = new Map();
 const app = express();
 app.use(express.json());
 
-// --- HILFSFUNKTIONEN (NOTION) ---
+// --- HILFSFUNKTIONEN ---
 
 function parseProperties(properties) {
   let data = {};
@@ -67,7 +67,7 @@ function buildNotionProps(data) {
     const notionFields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
     if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
     notionFields.forEach(f => { 
-        const incomingValue = data[f] || data[f.toLowerCase()] || data[f.replace(" by", "")] || data[f.replace(" by", "ing")];
+        const incomingValue = data[f] || data[f.toLowerCase()];
         if (incomingValue !== undefined && incomingValue !== null) {
             let val = incomingValue;
             if (typeof val === 'object') val = JSON.stringify(val);
@@ -89,7 +89,7 @@ async function showFullMask(chatId, pageId) {
         const val = props[f] || "";
         msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
     });
-    msg += `----------------------------------\n👉 *Infos einfach hier reinschreiben.*\n👉 *Sagen Sie **"Exportieren"**, um das Word-File zu erhalten.*\n👉 *Sagen Sie **"Fertig"**, um die Session zu schließen.*`;
+    msg += `----------------------------------\n👉 Infos einfach hier reinschreiben.\n👉 **"Exportieren"** für Word.\n👉 **"Fertig"** zum Pausieren.`;
     return msg;
 }
 
@@ -103,26 +103,22 @@ async function generateWordDoc(chatId, pageId) {
                 ...["Artist", "Titel", "Version", "Genre", "Time", "Written by", "Published by", "Produced by", "Mastered by", "Recording Country"].map(f => 
                     new Paragraph({ children: [new TextRun({ text: `${f}: `, bold: true }), new TextRun(lc[f] || "")] })
                 ),
-                new Paragraph({ children: [new TextRun({ text: "Additional Credits:", bold: true })], spacing: { before: 200 } }),
-                ...["Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by"].map(f => 
-                    new Paragraph({ children: [new TextRun({ text: `${f}: `, bold: true }), new TextRun(lc[f] || "")] })
-                ),
                 new Paragraph({ text: "Publisher Splits:", bold: true, spacing: { before: 400 } }),
                 new Table({
                     width: { size: 100, type: WidthType.PERCENTAGE },
-                    rows: (lc.Splits || "").split("\n").map(line => new TableRow({
+                    rows: (lc.Splits || "Writer 100%").split("\n").map(line => new TableRow({
                         children: [new TableCell({ children: [new Paragraph(line)] })]
                     }))
                 })
             ]
         }]
     });
-    const fileName = `LC_${lc.Artist || "Unbekannt"}_${lc.Titel || "Song"}.docx`.replace(/\s/g, "_");
+    const fileName = `LC_${lc.Artist || "Song"}.docx`.replace(/\s/g, "_");
     const buffer = await Packer.toBuffer(doc);
     fs.writeFileSync(fileName, buffer);
     await bot.sendDocument(chatId, fileName);
     fs.unlinkSync(fileName);
-    return "Hier ist dein Word-Dokument! 📄 Session beendet.";
+    return "Dokument gesendet! Session beendet.";
 }
 
 // --- HAUPT CHAT LOGIK ---
@@ -132,12 +128,12 @@ async function handleChat(chatId, text) {
     let session = activeSession.get(chatId);
 
     // 1. SESSION-STEUERUNG
-    if (session && (textLower === "fertig" || textLower === "session löschen" || textLower === "pause")) {
+    if (session && (textLower === "fertig" || textLower === "session löschen")) {
         activeSession.delete(chatId);
-        return "Check. Labelcopy-Session pausiert. Ich bin wieder im normalen Modus.";
+        return "Check. Session pausiert.";
     }
 
-    // 2. RECALL LOGIK (Alte LC laden)
+    // 2. RECALL LOGIK
     const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten"];
     if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
@@ -149,7 +145,7 @@ async function handleChat(chatId, text) {
     }
 
     if (session && session.step === "confirm_recall") {
-        if (textLower.includes("ja") || textLower.includes("yes") || textLower.includes("genau")) {
+        if (textLower.includes("ja") || textLower.includes("yes")) {
             activeSession.set(chatId, { step: "active", pageId: session.pendingPageId, artist: session.artist, title: session.title });
             return await showFullMask(chatId, session.pendingPageId);
         } else { activeSession.delete(chatId); return "Suche abgebrochen."; }
@@ -158,15 +154,15 @@ async function handleChat(chatId, text) {
     // 3. NEUE LC ANLEGEN
     if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
         activeSession.set(chatId, { step: "awaiting_artist" });
-        return "Alles klar! Welcher **Künstler**?";
+        return "Welcher **Künstler**?";
     }
 
-    // 4. AKTIVER LC WORKFLOW
+    // 4. LC WORKFLOW AKTIV
     if (session) {
         if (session.step === "awaiting_artist") {
             session.artist = text; session.step = "awaiting_title";
             activeSession.set(chatId, session);
-            return `Notiert: **${text}**. Und wie lautet der **Titel**?`;
+            return `Titel?`;
         }
         if (session.step === "awaiting_title") {
             session.title = text; session.step = "active";
@@ -186,14 +182,9 @@ async function handleChat(chatId, text) {
              const res = await generateWordDoc(chatId, session.pageId);
              activeSession.delete(chatId); return res;
         }
-
-        // Intelligente Extraktion für LC Felder
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o",
-            messages: [{ 
-                role: "system", 
-                content: "Du bist ein A&R Assistent. Extrahiere Infos für Labelcopy-Felder. Sei flexibel (z.B. 'Abmischung' -> Mixed by). 'Time' & 'Splits' sind Strings. Gib NUR JSON." 
-            }, { role: "user", content: text }],
+            messages: [{ role: "system", content: "Extrahiere Labelcopy Felder. Sei flexibel. Gib JSON." }, { role: "user", content: text }],
             response_format: { type: "json_object" }
         });
         const updateData = JSON.parse(extraction.choices[0].message.content);
@@ -203,13 +194,13 @@ async function handleChat(chatId, text) {
         }
     }
 
-    // 5. --- NORMALER MODUS (DIE UR-FUNKTIONEN) ---
+    // 5. --- NORMALER MODUS (KALENDER, WISSEN) ---
     const [calendarList, config, publishing, studios, bios, artistInfos] = await Promise.all([
         fetchFullDatabase(DB_CALENDARS), fetchFullDatabase(DB_CONFIG), fetchFullDatabase(DB_PUBLISHING), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS), fetchFullDatabase(DB_ARTIST_INFOS)
     ]);
     
-    // Google Kalender Logik (Original-Zustand)
-    const calendarTriggers = ["termin", "kalender", "meeting", "woche", "heute", "morgen"];
+    // Kalender Logik (REPARIERT)
+    const calendarTriggers = ["termin", "kalender", "meeting", "heute", "morgen"];
     if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
         try {
             const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
@@ -235,10 +226,9 @@ async function handleChat(chatId, text) {
         } catch (e) { return "❌ Kalender-Fehler."; }
     }
 
-    // Chat mit Wissens-Kontext
     let history = chatContext.get(chatId) || [];
     history.push({ role: "user", content: text });
-    const systemMsg = { role: "system", content: `A&R Assistent L'Agentur. Antworte locker und professionell. Wissen: Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}, ArtistInfos: ${JSON.stringify(artistInfos)}.` };
+    const systemMsg = { role: "system", content: `A&R Assistent L'Agentur. Wissen: Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}, ArtistInfos: ${JSON.stringify(artistInfos)}.` };
     const comp = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMsg, ...history.slice(-8)] });
     const ans = comp.choices[0].message.content;
     history.push({ role: "assistant", content: ans });
@@ -246,8 +236,7 @@ async function handleChat(chatId, text) {
     return ans;
 }
 
-// --- BOT START & VOICE ---
-
+// (Rest bleibt gleich...)
 bot.on("message", async (msg) => {
     if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
     const answer = await handleChat(msg.chat.id, msg.text);
@@ -268,12 +257,12 @@ bot.on("voice", async (msg) => {
             const answer = await handleChat(chatId, transcription.text);
             await bot.sendMessage(chatId, `📝 _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
         });
-    } catch (err) { await bot.sendMessage(chatId, "Fehler beim Audio."); }
+    } catch (err) { await bot.sendMessage(chatId, "Fehler."); }
 });
 
 app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
 app.listen(PORT, async () => {
     await bot.deleteWebHook({ drop_pending_updates: true });
     await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
-    console.log(`Bot läuft auf Port ${PORT}`);
+    console.log(`Bot läuft.`);
 });
