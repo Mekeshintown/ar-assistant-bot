@@ -92,9 +92,9 @@ function buildNotionProps(data) {
     const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
     fields.forEach(f => { 
         if (data[f]) {
-            // Sicherstellen, dass der Wert ein String ist (verhindert [object Object])
-            const finalVal = typeof data[f] === 'object' ? JSON.stringify(data[f]) : String(data[f]);
-            props[f] = { rich_text: [{ text: { content: finalVal } }] }; 
+            let val = data[f];
+            if (typeof val === 'object') val = JSON.stringify(val);
+            props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
         }
     });
     return props;
@@ -140,13 +140,43 @@ async function handleChat(chatId, text) {
     const textLower = text.toLowerCase();
     let session = activeSession.get(chatId);
 
-    // Initialer Trigger
+    // 1. RECALL mit Bestätigungsfrage
+    const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden"];
+    if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5) {
+        const lcs = await fetchFullDatabase(DB_LABELCOPIES);
+        const found = lcs.find(l => 
+            (l.Titel && textLower.includes(l.Titel.toLowerCase())) || 
+            (l.Artist && textLower.includes(l.Artist.toLowerCase()))
+        );
+
+        if (found) {
+            // Wir speichern den Fund vorerst nur als "Vorschlag" in der Session
+            activeSession.set(chatId, { step: "confirm_recall", pendingPageId: found.id, artist: found.Artist, title: found.Titel });
+            return `Ich habe eine Labelcopy gefunden: **${found.Artist} - ${found.Titel}**. \n\nMöchtest du an dieser weiterarbeiten? (Ja/Nein)`;
+        } else if (textLower.includes("zeig mir") || textLower.includes("status")) {
+            return "Ich konnte keine passende Labelcopy finden. Bitte nenne mir den Titel oder Künstler genauer.";
+        }
+    }
+
+    // Bestätigung verarbeiten
+    if (session && session.step === "confirm_recall") {
+        if (textLower.includes("ja") || textLower.includes("genau") || textLower.includes("yes") || textLower.includes("si")) {
+            const pageId = session.pendingPageId;
+            activeSession.set(chatId, { step: "active", pageId: pageId, artist: session.artist, title: session.title });
+            return `✅ Top! Wir arbeiten jetzt an **${session.artist} - ${session.title}**.\n\n` + await showFullMask(chatId, pageId);
+        } else {
+            activeSession.delete(chatId);
+            return "Alles klar, Suche abgebrochen. Was kann ich stattdessen für dich tun?";
+        }
+    }
+
+    // 2. Initialer Trigger für NEUE LC
     if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
         activeSession.set(chatId, { step: "awaiting_artist" });
         return "Alles klar! Welcher **Künstler** soll es sein?";
     }
 
-    // Workflow Session aktiv
+    // 3. Workflow Session aktiv
     if (session) {
         if (session.step === "awaiting_artist") {
             session.artist = text;
@@ -175,11 +205,10 @@ async function handleChat(chatId, text) {
 
         if (textLower.includes("export") || textLower.includes("word")) return await generateWordDoc(chatId, session.pageId);
         
-        // Intelligente Infos-Extraktion
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o",
             messages: [
-                { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. WICHTIG: 'Time' immer als String (z.B. '3:10'). 'Splits' immer als ein einziger String mit Zeilenumbrüchen. Gib NUR JSON zurück." }, 
+                { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. 'Time' und 'Splits' sind Strings. Gib NUR JSON zurück." }, 
                 { role: "user", content: text }
             ],
             response_format: { type: "json_object" }
@@ -189,16 +218,6 @@ async function handleChat(chatId, text) {
         if (Object.keys(updateData).length > 0) {
             await notion.pages.update({ page_id: session.pageId, properties: buildNotionProps(updateData) });
             return await showFullMask(chatId, session.pageId);
-        }
-    }
-
-    // --- RECALL / STATUS ---
-    if (textLower.includes("stand") || textLower.includes("status") || textLower.includes("zeig mir")) {
-        const lcs = await fetchFullDatabase(DB_LABELCOPIES);
-        const found = lcs.find(l => textLower.includes(l.Titel?.toLowerCase()) || (l.Artist && textLower.includes(l.Artist.toLowerCase())));
-        if (found) {
-            activeSession.set(chatId, { step: "active", pageId: found.id, artist: found.Artist, title: found.Titel });
-            return await showFullMask(chatId, found.id);
         }
     }
 
@@ -238,7 +257,7 @@ async function handleChat(chatId, text) {
 
     let history = chatContext.get(chatId) || [];
     history.push({ role: "user", content: text });
-    const systemMsg = { role: "system", content: `A&R Assistent der L'Agentur. Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}.` };
+    const systemMsg = { role: "system", content: `A&R Assistent der L'Agentur. Antworte professionell. Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}.` };
     const comp = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMsg, ...history.slice(-8)] });
     const ans = comp.choices[0].message.content;
     history.push({ role: "assistant", content: ans });
