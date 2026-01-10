@@ -10,7 +10,7 @@ const Airtable = require("airtable");
 const { google } = require("googleapis");
 const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun, AlignmentType } = require("docx");
 
-// --- SETUP & TOKENS ---
+// --- SETUP ---
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
@@ -18,15 +18,13 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-// IDs
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
+const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc";
+const DB_CALENDARS = "2e3c841ccef9800d96f2c38345eeb2bc";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0"; 
 const DB_PUBLISHING = "2e0c841ccef980579177d2996f1e92f4";
 const DB_ARTIST_INFOS = "2e2c841ccef98089aad0ed1531e8655b";
-const DB_CALENDARS = "2e3c841ccef9800d96f2c38345eeb2bc";
-const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc";
-const AIRTABLE_BASE_ID = "appF535cRZRho6btT";
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const notion = new NotionClient({ auth: NOTION_TOKEN });
@@ -38,8 +36,7 @@ const activeSession = new Map();
 const app = express();
 app.use(express.json());
 
-// --- HILFSFUNKTIONEN ---
-
+// --- HELPERS ---
 function parseProperties(properties) {
   let data = {};
   for (const key in properties) {
@@ -49,7 +46,6 @@ function parseProperties(properties) {
     else if (p.rich_text) val = p.rich_text[0]?.plain_text || "";
     else if (p.select) val = p.select.name || "";
     else if (p.number) val = p.number?.toString() || "";
-    else if (p.url) val = p.url || "";
     data[key] = val;
   }
   return data;
@@ -62,20 +58,31 @@ async function fetchFullDatabase(id) {
   } catch (e) { return []; }
 }
 
-async function fetchAirtableData(tableName) {
-  try {
-    const records = await airtableBase(tableName).select().all();
-    return records.map(r => ({ id: r.id, ...r.fields }));
-  } catch (e) { return []; }
-}
+// INTELLIGENTES MAPPING (FIX FÜR GROSS/KLEIN)
+function buildNotionProps(data) {
+    const props = {};
+    const notionFields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+    
+    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
 
-// --- LABELCOPY LOGIK ---
+    // Wir gehen durch alles, was die KI uns geschickt hat
+    Object.keys(data).forEach(incomingKey => {
+        // Suche das passende Feld in Notion (völlig egal ob groß oder klein geschrieben)
+        const match = notionFields.find(f => f.toLowerCase() === incomingKey.toLowerCase());
+        
+        if (match && data[incomingKey]) {
+            let val = data[incomingKey];
+            if (typeof val === 'object') val = JSON.stringify(val);
+            props[match] = { rich_text: [{ text: { content: String(val) } }] }; 
+        }
+    });
+    return props;
+}
 
 async function showFullMask(chatId, pageId) {
     const page = await notion.pages.retrieve({ page_id: pageId });
     const props = parseProperties(page.properties);
     const fields = ["Artist", "Titel", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
-    
     let msg = `📋 **Labelcopy: ${props.Artist || "..."} - ${props.Titel || "..."}**\n`;
     msg += `----------------------------------\n`;
     fields.forEach(f => {
@@ -83,24 +90,10 @@ async function showFullMask(chatId, pageId) {
         msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
     });
     msg += `----------------------------------\n`;
-    msg += `👉 *Infos einfach hier reinschreiben (lockere Sätze gehen).* \n`;
-    msg += `👉 *Sagen Sie **"Exportieren"**, um das Word-File zu erhalten.*\n`;
+    msg += `👉 *Infos einfach hier reinschreiben.*\n`;
+    msg += `👉 *Sagen Sie **"Exportieren"**, um zu beenden.*\n`;
     msg += `👉 *Sagen Sie **"Fertig"**, um die Session zu schließen.*`;
     return msg;
-}
-
-function buildNotionProps(data) {
-    const props = {};
-    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
-    const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
-    fields.forEach(f => { 
-        if (data[f] !== undefined && data[f] !== null) {
-            let val = data[f];
-            if (typeof val === 'object') val = JSON.stringify(val);
-            props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
-        }
-    });
-    return props;
 }
 
 async function generateWordDoc(chatId, pageId) {
@@ -132,23 +125,21 @@ async function generateWordDoc(chatId, pageId) {
     fs.writeFileSync(fileName, buffer);
     await bot.sendDocument(chatId, fileName);
     fs.unlinkSync(fileName);
-    return "Hier ist dein Dokument! 📄 Die Session wurde beendet.";
+    return "Hier ist dein Dokument! 📄 Session beendet.";
 }
 
-// --- HAUPT CHAT LOGIK ---
+// --- MAIN LOGIC ---
 
 async function handleChat(chatId, text) {
     const textLower = text.toLowerCase();
     let session = activeSession.get(chatId);
 
-    // SESSION BEENDEN
     if (session && (textLower === "fertig" || textLower === "session löschen")) {
         activeSession.delete(chatId);
-        return "Check. Labelcopy-Session geschlossen. Ich bin wieder im normalen Modus.";
+        return "Check. Session geschlossen. Ich bin wieder im normalen Modus.";
     }
 
-    // RECALL (Bestehende laden)
-    const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten"];
+    const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden"];
     if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
         const found = lcs.find(l => (l.Titel && textLower.includes(l.Titel.toLowerCase())) || (l.Artist && textLower.includes(l.Artist.toLowerCase())));
@@ -162,16 +153,14 @@ async function handleChat(chatId, text) {
         if (textLower.includes("ja") || textLower.includes("yes") || textLower.includes("genau")) {
             activeSession.set(chatId, { step: "active", pageId: session.pendingPageId, artist: session.artist, title: session.title });
             return await showFullMask(chatId, session.pendingPageId);
-        } else { activeSession.delete(chatId); return "Suche abgebrochen."; }
+        } else { activeSession.delete(chatId); return "Ok, abgebrochen."; }
     }
 
-    // NEUE LC ANLEGEN
     if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
         activeSession.set(chatId, { step: "awaiting_artist" });
         return "Alles klar! Welcher **Künstler**?";
     }
 
-    // AKTIVER WORKFLOW
     if (session) {
         if (session.step === "awaiting_artist") {
             session.artist = text; session.step = "awaiting_title";
@@ -196,9 +185,14 @@ async function handleChat(chatId, text) {
              const res = await generateWordDoc(chatId, session.pageId);
              activeSession.delete(chatId); return res;
         }
+
+        // SMARTE EXTRAKTION (FIX FÜR LOCKERES SCHREIBEN)
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o",
-            messages: [{ role: "system", content: "Extrahiere Labelcopy-Felder. 'Time' & 'Splits' sind Strings. GIB NUR JSON." }, { role: "user", content: text }],
+            messages: [{ 
+                role: "system", 
+                content: "Du bist ein A&R Assistent. Extrahiere Infos für die Labelcopy-Felder. Sei extrem flexibel: 'Mastering von Lex' -> {Mastered by: Lex}. 'Mix kommt von Gregor' -> {Mixed by: Gregor}. Gib NUR JSON zurück." 
+            }, { role: "user", content: text }],
             response_format: { type: "json_object" }
         });
         const updateData = JSON.parse(extraction.choices[0].message.content);
@@ -208,11 +202,16 @@ async function handleChat(chatId, text) {
         }
     }
 
-    // --- NORMALER MODUS (Kalender, Airtable, Chat) ---
-    const [calendarList] = await Promise.all([fetchFullDatabase(DB_CALENDARS)]);
+    // --- NORMALER MODUS ---
+    const [config, publishing, studios, bios, artistInfos, calendarList] = await Promise.all([fetchFullDatabase(DB_CONFIG), fetchFullDatabase(DB_PUBLISHING), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS), fetchFullDatabase(DB_ARTIST_INFOS), fetchFullDatabase(DB_CALENDARS)]);
+    
     const calendarTriggers = ["termin", "kalender", "meeting", "woche", "heute", "morgen"];
     if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
+        // ... (Kalender Logik identisch wie davor)
         try {
+            const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+            oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+            const calendar = google.calendar({ version: "v3", auth: oauth2Client });
             const extraction = await openai.chat.completions.create({
                 model: "gpt-4o",
                 messages: [{ role: "system", content: `Kalender-Assistent. Künstler: ${calendarList.map(c => c.Name).join(", ")}. JSON exportieren.` }, { role: "user", content: text }],
@@ -233,7 +232,6 @@ async function handleChat(chatId, text) {
         } catch (e) { return "❌ Kalender-Fehler."; }
     }
 
-    const [config, publishing, studios, bios, artistInfos] = await Promise.all([fetchFullDatabase(DB_CONFIG), fetchFullDatabase(DB_PUBLISHING), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS), fetchFullDatabase(DB_ARTIST_INFOS)]);
     let history = chatContext.get(chatId) || [];
     history.push({ role: "user", content: text });
     const systemMsg = { role: "system", content: `A&R Assistent L'Agentur. Antworte locker. Wissen: Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}, ArtistInfos: ${JSON.stringify(artistInfos)}.` };
@@ -244,8 +242,7 @@ async function handleChat(chatId, text) {
     return ans;
 }
 
-// --- SERVER & BOT START ---
-
+// --- BOT START ---
 bot.on("message", async (msg) => {
     if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
     const answer = await handleChat(msg.chat.id, msg.text);
@@ -273,5 +270,5 @@ app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(re
 app.listen(PORT, async () => {
     await bot.deleteWebHook({ drop_pending_updates: true });
     await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
-    console.log(`Bot läuft auf Port ${PORT}`);
+    console.log(`Bot läuft.`);
 });
