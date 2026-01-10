@@ -88,13 +88,28 @@ async function showFullMask(chatId, pageId) {
 
 function buildNotionProps(data) {
     const props = {};
-    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
+    
+    if (data.Titel) {
+        props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
+    }
+
     const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+    
     fields.forEach(f => { 
-        if (data[f]) {
-            let val = data[f];
-            if (typeof val === 'object') val = JSON.stringify(val);
-            props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
+        if (data[f] !== undefined && data[f] !== null) {
+            let finalVal = "";
+            
+            // Verhindert [object Object]: Wenn es ein Array oder Objekt ist, wandle es in einen String um
+            if (Array.isArray(data[f])) {
+                finalVal = data[f].map(item => typeof item === 'object' ? JSON.stringify(item) : String(item)).join("\n");
+            } else if (typeof data[f] === 'object') {
+                // Wenn GPT ein Objekt für Splits liefert (z.B. { "Lucas": "50%" }), machen wir Text daraus
+                finalVal = Object.entries(data[f]).map(([k, v]) => `${k}: ${v}`).join("\n");
+            } else {
+                finalVal = String(data[f]);
+            }
+
+            props[f] = { rich_text: [{ text: { content: finalVal } }] }; 
         }
     });
     return props;
@@ -142,7 +157,7 @@ async function handleChat(chatId, text) {
 
     // 1. RECALL mit Bestätigungsfrage
     const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden"];
-    if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5) {
+    if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
         const found = lcs.find(l => 
             (l.Titel && textLower.includes(l.Titel.toLowerCase())) || 
@@ -150,23 +165,20 @@ async function handleChat(chatId, text) {
         );
 
         if (found) {
-            // Wir speichern den Fund vorerst nur als "Vorschlag" in der Session
             activeSession.set(chatId, { step: "confirm_recall", pendingPageId: found.id, artist: found.Artist, title: found.Titel });
             return `Ich habe eine Labelcopy gefunden: **${found.Artist} - ${found.Titel}**. \n\nMöchtest du an dieser weiterarbeiten? (Ja/Nein)`;
-        } else if (textLower.includes("zeig mir") || textLower.includes("status")) {
-            return "Ich konnte keine passende Labelcopy finden. Bitte nenne mir den Titel oder Künstler genauer.";
         }
     }
 
     // Bestätigung verarbeiten
     if (session && session.step === "confirm_recall") {
-        if (textLower.includes("ja") || textLower.includes("genau") || textLower.includes("yes") || textLower.includes("si")) {
+        if (textLower.includes("ja") || textLower.includes("genau") || textLower.includes("yes")) {
             const pageId = session.pendingPageId;
             activeSession.set(chatId, { step: "active", pageId: pageId, artist: session.artist, title: session.title });
-            return `✅ Top! Wir arbeiten jetzt an **${session.artist} - ${session.title}**.\n\n` + await showFullMask(chatId, pageId);
+            return `✅ Session reaktiviert für **${session.artist} - ${session.title}**.\n\n` + await showFullMask(chatId, pageId);
         } else {
             activeSession.delete(chatId);
-            return "Alles klar, Suche abgebrochen. Was kann ich stattdessen für dich tun?";
+            return "Ok, was kann ich stattdessen für dich tun?";
         }
     }
 
@@ -205,10 +217,11 @@ async function handleChat(chatId, text) {
 
         if (textLower.includes("export") || textLower.includes("word")) return await generateWordDoc(chatId, session.pageId);
         
+        // Intelligente Extraktion
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o",
             messages: [
-                { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. 'Time' und 'Splits' sind Strings. Gib NUR JSON zurück." }, 
+                { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. 'Time' (z.B. 3:10) ist IMMER ein String. 'Splits' müssen als Text/String ausgegeben werden (z.B. 'Name 50%, Name 50%'). Gib NUR JSON zurück." }, 
                 { role: "user", content: text }
             ],
             response_format: { type: "json_object" }
@@ -257,7 +270,7 @@ async function handleChat(chatId, text) {
 
     let history = chatContext.get(chatId) || [];
     history.push({ role: "user", content: text });
-    const systemMsg = { role: "system", content: `A&R Assistent der L'Agentur. Antworte professionell. Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}.` };
+    const systemMsg = { role: "system", content: `A&R Assistent der L'Agentur. Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}.` };
     const comp = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMsg, ...history.slice(-8)] });
     const ans = comp.choices[0].message.content;
     history.push({ role: "assistant", content: ans });
