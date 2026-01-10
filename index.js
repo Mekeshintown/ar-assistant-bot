@@ -69,7 +69,7 @@ async function fetchAirtableData(tableName) {
   } catch (e) { return []; }
 }
 
-// --- LABELCOPY SPEZIALFUNKTIONEN ---
+// --- LABELCOPY LOGIK ---
 
 async function showFullMask(chatId, pageId) {
     const page = await notion.pages.retrieve({ page_id: pageId });
@@ -88,9 +88,15 @@ async function showFullMask(chatId, pageId) {
 
 function buildNotionProps(data) {
     const props = {};
-    if (data.Titel) props["Titel"] = { title: [{ text: { content: data.Titel } }] };
+    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
     const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
-    fields.forEach(f => { if (data[f]) props[f] = { rich_text: [{ text: { content: data[f].toString() } }] }; });
+    fields.forEach(f => { 
+        if (data[f]) {
+            // Sicherstellen, dass der Wert ein String ist (verhindert [object Object])
+            const finalVal = typeof data[f] === 'object' ? JSON.stringify(data[f]) : String(data[f]);
+            props[f] = { rich_text: [{ text: { content: finalVal } }] }; 
+        }
+    });
     return props;
 }
 
@@ -134,13 +140,13 @@ async function handleChat(chatId, text) {
     const textLower = text.toLowerCase();
     let session = activeSession.get(chatId);
 
-    // 1. Initialer Trigger
+    // Initialer Trigger
     if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
         activeSession.set(chatId, { step: "awaiting_artist" });
         return "Alles klar! Welcher **Künstler** soll es sein?";
     }
 
-    // 2. Workflow / Session aktiv
+    // Workflow Session aktiv
     if (session) {
         if (session.step === "awaiting_artist") {
             session.artist = text;
@@ -157,7 +163,7 @@ async function handleChat(chatId, text) {
             
             const extraction = await openai.chat.completions.create({
                 model: "gpt-4o",
-                messages: [{ role: "system", content: `Wende diese Regeln an: ${rules}. Wenn Artist "${session.artist}" ist, fülle Presets. Gib NUR JSON zurück.` }, { role: "user", content: `Artist: ${session.artist}, Titel: ${session.title}` }],
+                messages: [{ role: "system", content: `Regeln: ${rules}. Wenn Artist "${session.artist}" ist, fülle Presets. Gib NUR JSON.` }, { role: "user", content: `Artist: ${session.artist}, Titel: ${session.title}` }],
                 response_format: { type: "json_object" }
             });
             const presetData = JSON.parse(extraction.choices[0].message.content);
@@ -169,11 +175,11 @@ async function handleChat(chatId, text) {
 
         if (textLower.includes("export") || textLower.includes("word")) return await generateWordDoc(chatId, session.pageId);
         
-        // Intelligente Infos-Extraktion (Mitdenk-Logik)
+        // Intelligente Infos-Extraktion
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o",
             messages: [
-                { role: "system", content: "Du bist ein intelligenter Assistent. Ordne die Infos des Users den richtigen Labelcopy-Feldern zu (Genre, Mixed by, Mastered by, etc.). Gib NUR JSON zurück." }, 
+                { role: "system", content: "Extrahiere Infos für Labelcopy-Felder. WICHTIG: 'Time' immer als String (z.B. '3:10'). 'Splits' immer als ein einziger String mit Zeilenumbrüchen. Gib NUR JSON zurück." }, 
                 { role: "user", content: text }
             ],
             response_format: { type: "json_object" }
@@ -189,7 +195,7 @@ async function handleChat(chatId, text) {
     // --- RECALL / STATUS ---
     if (textLower.includes("stand") || textLower.includes("status") || textLower.includes("zeig mir")) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
-        const found = lcs.find(l => textLower.includes(l.Titel?.toLowerCase()) || textLower.includes(l.Artist?.toLowerCase()));
+        const found = lcs.find(l => textLower.includes(l.Titel?.toLowerCase()) || (l.Artist && textLower.includes(l.Artist.toLowerCase())));
         if (found) {
             activeSession.set(chatId, { step: "active", pageId: found.id, artist: found.Artist, title: found.Titel });
             return await showFullMask(chatId, found.id);
@@ -206,7 +212,7 @@ async function handleChat(chatId, text) {
             const calendar = google.calendar({ version: "v3", auth: oauth2Client });
             const extraction = await openai.chat.completions.create({
                 model: "gpt-4o",
-                messages: [{ role: "system", content: `Kalender-Assistent. Künstler: ${calendarList.map(c => c.Name).join(", ")}. JSON exportieren.` }, { role: "user", content: text }],
+                messages: [{ role: "system", content: `Kalender-Assistent. JSON exportieren.` }, { role: "user", content: text }],
                 response_format: { type: "json_object" }
             });
             const d = JSON.parse(extraction.choices[0].message.content);
@@ -226,14 +232,13 @@ async function handleChat(chatId, text) {
     }
 
     // --- NORMALER CHAT & AIRTABLE ---
-    const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing] = await Promise.all([
-        fetchFullDatabase(DB_CONFIG), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS), fetchFullDatabase(DB_ARTIST_INFOS),
-        fetchAirtableData('Artist Pitch'), fetchAirtableData('Label Pitch'), fetchFullDatabase(DB_PUBLISHING)
+    const [config, studios, bios, artistInfos, publishing] = await Promise.all([
+        fetchFullDatabase(DB_CONFIG), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS), fetchFullDatabase(DB_ARTIST_INFOS), fetchFullDatabase(DB_PUBLISHING)
     ]);
 
     let history = chatContext.get(chatId) || [];
     history.push({ role: "user", content: text });
-    const systemMsg = { role: "system", content: `A&R Assistent der L'Agentur. Antworte professionell. Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}.` };
+    const systemMsg = { role: "system", content: `A&R Assistent der L'Agentur. Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}.` };
     const comp = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMsg, ...history.slice(-8)] });
     const ans = comp.choices[0].message.content;
     history.push({ role: "assistant", content: ans });
