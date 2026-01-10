@@ -8,9 +8,9 @@ const axios = require("axios");
 const fs = require("fs");
 const Airtable = require("airtable");
 const { google } = require("googleapis");
-const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun } = require("docx");
+const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun, AlignmentType } = require("docx");
 
-// --- SETUP ---
+// --- SETUP & TOKENS ---
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
@@ -37,7 +37,8 @@ const activeSession = new Map();
 const app = express();
 app.use(express.json());
 
-// --- HELPERS ---
+// --- HILFSFUNKTIONEN ---
+
 function parseProperties(properties) {
   let data = {};
   for (const key in properties) {
@@ -59,18 +60,28 @@ async function fetchFullDatabase(id) {
   } catch (e) { return []; }
 }
 
+async function fetchAirtableData(tableName) {
+  try {
+    const records = await airtableBase(tableName).select().all();
+    return records.map(r => ({ id: r.id, ...r.fields }));
+  } catch (e) { return []; }
+}
+
 function buildNotionProps(data) {
     const props = {};
     const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
-    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
+    
+    // Verhindert falsche Feldnamen
+    const titleKey = data.Titel ? "Titel" : (data.Title ? "Titel" : null);
+    if (titleKey) props["Titel"] = { title: [{ text: { content: String(data[titleKey]) } }] };
     
     Object.keys(data).forEach(k => {
         const match = fields.find(f => f.toLowerCase() === k.toLowerCase());
         if (match && data[k]) {
             let val = data[k];
-            // Radikaler Check gegen [object Object]
+            // Fix für "bescheuerte Nummern" & object object:
             if (typeof val === 'object') {
-                val = Object.entries(val).map(([name, split]) => `${name}: ${split}`).join("\n");
+                val = Object.entries(val).map(([key, value]) => `${key}: ${value}`).join("\n");
             }
             props[match] = { rich_text: [{ text: { content: String(val) } }] }; 
         }
@@ -82,15 +93,50 @@ async function showFullMask(chatId, pageId) {
     const page = await notion.pages.retrieve({ page_id: pageId });
     const props = parseProperties(page.properties);
     const fields = ["Artist", "Titel", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+    
     let msg = `📋 **Labelcopy: ${props.Artist || "..."} - ${props.Titel || "..."}**\n`;
     msg += `----------------------------------\n`;
     fields.forEach(f => {
         const val = props[f] || "";
         msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
     });
-    msg += `----------------------------------\n👉 Schreib einfach neue Infos rein (z.B. "Mix Gregor").\n👉 **"Exportieren"** für Word.\n👉 **"Fertig"** zum Pausieren.`;
+    msg += `----------------------------------\n👉 Einfach Infos schreiben (z.B. "Mix Gregor").\n👉 **"Exportieren"** für Word.\n👉 **"Fertig"** zum Schließen.`;
     return msg;
 }
+
+async function generateWordDoc(chatId, pageId) {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const lc = parseProperties(page.properties);
+    const doc = new Document({
+        sections: [{
+            children: [
+                new Paragraph({ children: [new TextRun({ text: "Labelcopy", bold: true, size: 36 })], spacing: { after: 400 } }),
+                ...["Artist", "Titel", "Version", "Genre", "Time", "Written by", "Published by", "Produced by", "Mastered by", "Recording Country"].map(f => 
+                    new Paragraph({ children: [new TextRun({ text: `${f}: `, bold: true }), new TextRun(lc[f] || "")] })
+                ),
+                new Paragraph({ children: [new TextRun({ text: "additional credits: ", bold: true })], spacing: { before: 200 } }),
+                ...["Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by"].map(f => 
+                    new Paragraph({ children: [new TextRun({ text: `${f}: `, bold: true }), new TextRun(lc[f] || "")] })
+                ),
+                new Paragraph({ text: "Publisher Splits:", bold: true, spacing: { before: 400 } }),
+                new Table({
+                    width: { size: 100, type: WidthType.PERCENTAGE },
+                    rows: (lc.Splits || "Writer 100%").split("\n").map(line => new TableRow({
+                        children: [new TableCell({ children: [new Paragraph(line)] })]
+                    }))
+                })
+            ]
+        }]
+    });
+    const fileName = `LC_${lc.Artist || "Song"}.docx`.replace(/\s/g, "_");
+    const buffer = await Packer.toBuffer(doc);
+    fs.writeFileSync(fileName, buffer);
+    await bot.sendDocument(chatId, fileName);
+    fs.unlinkSync(fileName);
+    return "Word-Datei wurde gesendet! Session beendet.";
+}
+
+// --- HAUPT LOGIK ---
 
 async function handleChat(chatId, text) {
     const textLower = text.toLowerCase();
@@ -98,9 +144,10 @@ async function handleChat(chatId, text) {
 
     if (session && (textLower === "fertig" || textLower === "session löschen")) {
         activeSession.delete(chatId);
-        return "Labelcopy-Session pausiert. Ich bin wieder im normalen Modus.";
+        return "Labelcopy-Session beendet. Ich bin wieder im normalen Modus.";
     }
 
+    // RECALL
     const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten"];
     if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
@@ -131,21 +178,25 @@ async function handleChat(chatId, text) {
         }
         if (session.step === "awaiting_title") {
             session.title = text; session.step = "active";
-            const newPage = await notion.pages.create({ parent: { database_id: DB_LABELCOPIES }, properties: buildNotionProps({ Artist: session.artist, Titel: session.title }) });
+            const configs = await fetchFullDatabase(DB_CONFIG);
+            const rules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
+            const extraction = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [{ role: "system", content: `Regeln: ${rules}. Wenn Artist "${session.artist}" ist, fülle Presets. Gib JSON.` }, { role: "user", content: `Artist: ${session.artist}, Titel: ${session.title}` }],
+                response_format: { type: "json_object" }
+            });
+            const presetData = JSON.parse(extraction.choices[0].message.content);
+            const newPage = await notion.pages.create({ parent: { database_id: DB_LABELCOPIES }, properties: buildNotionProps({ ...presetData, Artist: session.artist, Titel: session.title }) });
             session.pageId = newPage.id; activeSession.set(chatId, session);
             return await showFullMask(chatId, newPage.id);
         }
-        
-        // --- DIE INTELLIGENTE EXTRAKTION ---
+        if (textLower.includes("exportieren")) {
+             const res = await generateWordDoc(chatId, session.pageId);
+             activeSession.delete(chatId); return res;
+        }
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o",
-            messages: [{ 
-                role: "system", 
-                content: `Du bist ein A&R Assistent. Extrahiere Infos. 
-                DENK MIT: "Mix", "Abmischung" -> Mixed by. "Master", "Mastering" -> Mastered by. "Dauer", "Länge" -> Time.
-                SPLITS: Gib sie IMMER als Text zurück: "Name: XX%". 
-                GIB NUR JSON ZURÜCK.` 
-            }, { role: "user", content: text }],
+            messages: [{ role: "system", content: "Extrahiere Labelcopy Felder. 'Time' (z.B. 3:10) & 'Splits' sind Strings. Gib NUR JSON." }, { role: "user", content: text }],
             response_format: { type: "json_object" }
         });
         const updateData = JSON.parse(extraction.choices[0].message.content);
@@ -155,32 +206,75 @@ async function handleChat(chatId, text) {
         }
     }
 
-    // --- NORMALER MODUS (KALENDER, WISSEN) ---
-    const [calendarList, publishing, studios, bios] = await Promise.all([
-        fetchFullDatabase(DB_CALENDARS), fetchFullDatabase(DB_PUBLISHING), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS)
+    // --- NORMALER MODUS ---
+    const [calendarList, config, publishing, studios, bios, artistInfos] = await Promise.all([
+        fetchFullDatabase(DB_CALENDARS), fetchFullDatabase(DB_CONFIG), fetchFullDatabase(DB_PUBLISHING), fetchFullDatabase(DB_STUDIOS), fetchFullDatabase(DB_BIOS), fetchFullDatabase(DB_ARTIST_INFOS)
     ]);
     
-    // Kalender (Termine)
-    if (["termin", "heute", "morgen", "kalender"].some(t => textLower.includes(t)) && text.length > 5) {
-        // Hier bleibt deine Kalender-Logik (Code wie davor)...
-        return "Ich schaue in den Kalender... (Kalender-Funktion aktiv)";
+    // Kalender Logik
+    const calendarTriggers = ["termin", "kalender", "meeting", "woche", "heute", "morgen"];
+    if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
+        try {
+            const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+            oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+            const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+            const extraction = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [{ role: "system", content: `Kalender-Assistent. Künstler: ${calendarList.map(c => c.Name).join(", ")}. JSON exportieren.` }, { role: "user", content: text }],
+                response_format: { type: "json_object" }
+            });
+            const d = JSON.parse(extraction.choices[0].message.content);
+            const artist = calendarList.find(c => d.artist && c.Name.toLowerCase() === d.artist.toLowerCase());
+            const calId = artist?.["Calendar ID"] || "mate.spellenberg.umusic@gmail.com";
+            if (d.type === "read" || textLower.includes("wie sieht")) {
+                const res = await calendar.events.list({ calendarId: calId, timeMin: new Date().toISOString(), singleEvents: true, orderBy: "startTime" });
+                let l = `📅 Termine:\n`;
+                res.data.items.forEach(e => { l += `• ${new Date(e.start.dateTime || e.start.date).toLocaleString('de-DE')}: ${e.summary}\n`; });
+                return l;
+            } else {
+                await calendar.events.insert({ calendarId: calId, resource: { summary: d.title, start: { dateTime: d.start_iso, timeZone: "Europe/Berlin" }, end: { dateTime: d.end_iso, timeZone: "Europe/Berlin" } } });
+                return `✅ Termin eingetragen.`;
+            }
+        } catch (e) { return "❌ Kalender-Fehler."; }
     }
 
-    // Normaler Chat
-    const systemMsg = { role: "system", content: `A&R Wissen: Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}.` };
-    const comp = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMsg, {role: "user", content: text}] });
-    return comp.choices[0].message.content;
+    let history = chatContext.get(chatId) || [];
+    history.push({ role: "user", content: text });
+    const systemMsg = { role: "system", content: `A&R Assistent L'Agentur. Wissen: Publishing: ${JSON.stringify(publishing)}, Studios: ${JSON.stringify(studios)}, Bios: ${JSON.stringify(bios)}, ArtistInfos: ${JSON.stringify(artistInfos)}.` };
+    const comp = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMsg, ...history.slice(-8)] });
+    const ans = comp.choices[0].message.content;
+    history.push({ role: "assistant", content: ans });
+    chatContext.set(chatId, history);
+    return ans;
 }
 
-// (Bot Start & Server Logik identisch)
+// --- BOT START ---
 bot.on("message", async (msg) => {
-    if (msg.voice || !msg.text) return;
+    if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
     const answer = await handleChat(msg.chat.id, msg.text);
     await bot.sendMessage(msg.chat.id, answer, { parse_mode: "Markdown" });
 });
 
+bot.on("voice", async (msg) => {
+    const chatId = msg.chat.id;
+    try {
+        const fileLink = await bot.getFileLink(msg.voice.file_id);
+        const response = await axios({ url: fileLink, responseType: "stream" });
+        const tempPath = `./${msg.voice.file_id}.ogg`;
+        const writer = fs.createWriteStream(tempPath);
+        response.data.pipe(writer);
+        writer.on("finish", async () => {
+            const transcription = await openai.audio.transcriptions.create({ file: fs.createReadStream(tempPath), model: "whisper-1" });
+            fs.unlinkSync(tempPath);
+            const answer = await handleChat(chatId, transcription.text);
+            await bot.sendMessage(chatId, `📝 _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
+        });
+    } catch (err) { await bot.sendMessage(chatId, "Audio-Fehler."); }
+});
+
 app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
 app.listen(PORT, async () => {
+    await bot.deleteWebHook({ drop_pending_updates: true });
     await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
     console.log(`Bot läuft.`);
 });
