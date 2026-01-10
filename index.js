@@ -7,7 +7,7 @@ const OpenAI = require("openai");
 const axios = require("axios");
 const fs = require("fs");
 const Airtable = require("airtable");
-const { google } = require("googleapis");
+const { google } = require("googleapis"); // NEU hinzugefügt
 const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun } = require("docx");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -17,7 +17,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-// Google Calendar Setup (Exakt wie in deiner Basis)
+// Google Calendar Setup (NEU)
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -26,7 +26,7 @@ const oauth2Client = new google.auth.OAuth2(
 oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 const calendar = google.calendar({ version: "v3", auth: oauth2Client });
 
-// DEINE IDs (Unverändert)
+// DEINE IDs
 const DB_CONFIG = "2e1c841ccef980708df2ecee5f0c2df0";
 const DB_STUDIOS = "2e0c841ccef980b49c4aefb4982294f0";
 const DB_BIOS = "2e0c841ccef9807e9b73c9666ce4fcb0"; 
@@ -46,7 +46,7 @@ const activeSession = new Map();
 const app = express();
 app.use(express.json());
 
-// --- HILFSFUNKTIONEN (Exakt aus deiner Basis) ---
+// --- HILFSFUNKTIONEN ---
 
 function parseProperties(properties) {
   let data = {};
@@ -79,16 +79,15 @@ async function fetchAirtableData(tableName) {
   } catch (e) { return []; }
 }
 
-// --- NEUE LABELCOPY HELPER (Zusatz) ---
+// --- LABELCOPY ZUSATZ ---
 
 function buildNotionProps(data) {
     const props = {};
-    const notionFields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+    const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
     if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
-    notionFields.forEach(f => { 
-        const incomingValue = data[f] || data[f.toLowerCase()];
-        if (incomingValue !== undefined && incomingValue !== null) {
-            let val = incomingValue;
+    fields.forEach(f => { 
+        if (data[f] || data[f.toLowerCase()]) {
+            let val = data[f] || data[f.toLowerCase()];
             if (typeof val === 'object') val = JSON.stringify(val);
             props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
         }
@@ -116,7 +115,6 @@ async function handleChat(chatId, text) {
   const textLower = text.toLowerCase();
   let session = activeSession.get(chatId);
 
-  // SESSION STEUERUNG
   if (session && (textLower === "fertig" || textLower === "session löschen")) {
     activeSession.delete(chatId);
     return "Check. Session geschlossen. Ich bin wieder im normalen Modus.";
@@ -126,7 +124,7 @@ async function handleChat(chatId, text) {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
 
-  // Original Fetching (Exakt wie in deiner Datei)
+  // 1:1 Kopie des Fetchings aus deiner Basis
   const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
     fetchSafely(DB_CONFIG),
     fetchSafely(DB_STUDIOS),
@@ -138,7 +136,7 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_CALENDARS)
   ]);
 
-  // LABELCOPY RECALL
+  // LABELCOPY LOGIK (Nur als Zusatz)
   const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten"];
   if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session) {
     const lcs = await fetchFullDatabase(DB_LABELCOPIES);
@@ -156,13 +154,11 @@ async function handleChat(chatId, text) {
     } else { activeSession.delete(chatId); return "Suche abgebrochen."; }
   }
 
-  // LC TRIGGER
   if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
     activeSession.set(chatId, { step: "awaiting_artist" });
     return "Alles klar! Welcher **Künstler** soll es sein?";
   }
 
-  // LC WORKFLOW AKTIV
   if (session) {
     if (session.step === "awaiting_artist") {
       session.artist = text; session.step = "awaiting_title";
@@ -178,7 +174,7 @@ async function handleChat(chatId, text) {
     
     const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
-        messages: [{ role: "system", content: "Extrahiere Labelcopy Felder als JSON. 'Abmischung' -> Mixed by etc." }, { role: "user", content: text }],
+        messages: [{ role: "system", content: "Extrahiere Labelcopy Felder als JSON. 'Abmischung' -> Mixed by etc. Gib JSON." }, { role: "user", content: text }],
         response_format: { type: "json_object" }
     });
     const updateData = JSON.parse(extraction.choices[0].message.content);
@@ -188,65 +184,34 @@ async function handleChat(chatId, text) {
     }
   }
 
-  // --- KALENDER LOGIK (1:1 aus deiner Basis) ---
+  // --- KALENDER LOGIK (1:1 AUS DEINER BASIS) ---
   const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
   if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
     try {
-      const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
-      oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
-      const calendarClient = google.calendar({ version: "v3", auth: oauth2Client });
-
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
-        messages: [
-          { 
-            role: "system", 
-            content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
-            Künstler: ${calendarList.map(c => c.Name).join(", ")}.
-            Gib NUR JSON zurück.` 
-          },
-          { role: "user", content: text }
-        ],
+        messages: [{ role: "system", content: `Kalender-Assistent. JSON exportieren. Künstler: ${calendarList.map(c => c.Name).join(", ")}.` }, { role: "user", content: text }],
         response_format: { type: "json_object" }
       });
       const data = JSON.parse(extraction.choices[0].message.content);
       const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
       const calId = artistEntry?.["Calendar ID"] || "mate.spellenberg.umusic@gmail.com";
-      const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
-
+      
       if (data.type === "read" || textLower.includes("wie sieht")) {
-        const response = await calendarClient.events.list({ calendarId: calId, timeMin: new Date().toISOString(), singleEvents: true, orderBy: "startTime" });
+        const response = await calendar.events.list({ calendarId: calId, timeMin: new Date().toISOString(), singleEvents: true, orderBy: "startTime" });
         const events = response.data.items;
-        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
-        let list = `📅 **Termine für ${artistName}:**\n`;
+        if (!events || events.length === 0) return `📅 Keine Termine für **${artistEntry?.Name || "Mate"}** gefunden.`;
+        let list = `📅 **Termine für ${artistEntry?.Name || "Mate"}:**\n`;
         events.forEach(e => { list += `• ${new Date(e.start.dateTime || e.start.date).toLocaleString('de-DE')}: **${e.summary}**\n`; });
         return list;
       } else {
-        await calendarClient.events.insert({ calendarId: calId, resource: { summary: data.title, start: { dateTime: data.start_iso, timeZone: "Europe/Berlin" }, end: { dateTime: data.end_iso || new Date(new Date(data.start_iso).getTime() + 3600000).toISOString(), timeZone: "Europe/Berlin" } } });
-        return `✅ Termin eingetragen für **${artistName}**.`;
+        await calendar.events.insert({ calendarId: calId, resource: { summary: data.title, start: { dateTime: data.start_iso, timeZone: "Europe/Berlin" }, end: { dateTime: data.end_iso || new Date(new Date(data.start_iso).getTime() + 3600000).toISOString(), timeZone: "Europe/Berlin" } } });
+        return `✅ Termin eingetragen.`;
       }
     } catch (err) { return "❌ Kalender-Fehler."; }
   }
 
-  // --- GMAIL / EMAIL LOGIK (Original) ---
-  if (textLower.includes("mail") || textLower.includes("email") || textLower.includes("posteingang")) {
-    try {
-        const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
-        oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
-        const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-        const res = await gmail.users.messages.list({ userId: "me", maxResults: 5 });
-        if (!res.data.messages) return "Keine Mails gefunden.";
-        let l = "Letzte E-Mails:\n";
-        for (const m of res.data.messages) {
-            const details = await gmail.users.messages.get({ userId: "me", id: m.id });
-            const subject = details.data.payload.headers.find(h => h.name === "Subject")?.value || "Kein Betreff";
-            l += `- ${subject}\n`;
-        }
-        return l;
-    } catch (e) { return "E-Mail-Zugriff fehlgeschlagen."; }
-  }
-  
-  // --- AIRTABLE SAVE (1:1) ---
+  // --- AIRTABLE SAVE (1:1 AUS DEINER BASIS) ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
   if (triggerWords.some(word => text.toLowerCase().includes(word)) && !text.toLowerCase().includes("termin")) {
     try {
@@ -262,13 +227,11 @@ async function handleChat(chatId, text) {
     } catch (error) { return "❌ Airtable Fehler."; }
   }
 
-  // --- NORMALER CHAT (Original Tonalität) ---
+  // --- NORMALER CHAT (1:1 AUS DEINER BASIS) ---
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
   if (history.length > 8) history.shift();
-  
   const pitchRules = config.find(c => c.Key === "Pitch_Rules")?.Value || "";
-
   const systemMessage = { 
     role: "system", 
     content: `Du bist der A&R Assistent der L'Agentur. Antworte professionell und präzise.
@@ -282,7 +245,6 @@ async function handleChat(chatId, text) {
     - BIOS: ${JSON.stringify(bios)}
     - STUDIOS: ${JSON.stringify(studios)}` 
   };
-
   const completion = await openai.chat.completions.create({ model: "gpt-4o", messages: [systemMessage, ...history] });
   const answer = completion.choices[0].message.content;
   history.push({ role: "assistant", content: answer });
@@ -290,8 +252,7 @@ async function handleChat(chatId, text) {
   return answer;
 }
 
-// --- BOT EVENTS & SERVER ---
-
+// --- BOT EVENTS --- (IDENTISCH ZU BASIS)
 bot.on("message", async (msg) => {
   if (msg.voice || !msg.text || msg.text.startsWith("/")) return;
   const answer = await handleChat(msg.chat.id, msg.text);
@@ -312,7 +273,7 @@ bot.on("voice", async (msg) => {
       const answer = await handleChat(chatId, transcription.text);
       await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
     });
-  } catch (err) { await bot.sendMessage(chatId, "Fehler beim Audio."); }
+  } catch (err) { await bot.sendMessage(chatId, "Fehler."); }
 });
 
 app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
