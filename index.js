@@ -250,7 +250,7 @@ async function handleChat(chatId, text) {
       activeSession.delete(chatId);
       return "Check. Labelcopy-Session geschlossen.";
   }
-  // ... (Labelcopy Logic wie zuvor) ...
+  
   const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden"];
   if (recallTriggers.some(t => textLower.includes(t)) && text.length > 5 && !session && (textLower.includes("lc") || textLower.includes("labelcopy") || textLower.includes("song"))) {
         const lcs = await fetchFullDatabase(DB_LABELCOPIES);
@@ -374,7 +374,6 @@ async function handleChat(chatId, text) {
       const currentSession = lastSessionData.get(chatId);
       
       // HIER LIEGT DIE MAGIE: Wir mappen jetzt korrekt auf "Telefonnummer"
-      // Außerdem flexibel genug für zukünftige Spalten (Email etc.)
       const artistContacts = artistInfos.map(a => {
           // Wir suchen nach Nummer, Telefonnummer oder Phone
           const number = a.Telefonnummer || a.Phone || a.Telefon || "Keine Nr";
@@ -490,7 +489,7 @@ async function handleChat(chatId, text) {
   }
 
   // --- AIRTABLE & PITCH ---
-  // FIX: Triggerwords jetzt korrekt definiert
+  // FIX: HIER IST DIE DEFINITION JETZT KORREKT DRIN:
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
   
   if (triggerWords.some(word => text.toLowerCase().includes(word))) { return "Airtable Save (Simulated)"; }
