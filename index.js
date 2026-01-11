@@ -40,7 +40,8 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
 const chatContext = new Map();
-const pendingCalendar = new Map(); // Für die Sicherheits-Schleife
+const pendingCalendar = new Map(); // Für die 
+-Schleife
 const lastSessionData = new Map(); // Für das Session-Gedächtnis
 const app = express();
 app.use(express.json());
@@ -122,42 +123,30 @@ const textLower = text.toLowerCase();
 // --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
   if (pendingCalendar.has(chatId)) {
       const pendingData = pendingCalendar.get(chatId);
-  
-          
-          let timeStr = "Ganztägig";
-          if (evt.start.dateTime) {
-              const sTime = start.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
-              const end = new Date(evt.end.dateTime);
-              const eTime = end.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
-              timeStr = `${sTime} - ${eTime}`;
-          }
 
-          const guests = (evt.attendees || []).map(a => a.email).join(", ") || "-";
-
-          return `📝 **Termin-Entwurf für: ${pendingData.calName || "Kalender"}**\n\n` +
-                 `**Titel:** ${evt.summary}\n` +
-                 `**Date:** ${dateStr}\n` +
-                 `**Zeit:** ${timeStr}\n` +
-                 `**Ort:** ${evt.location || "-"}\n` +
-                 `**Beschreibung:** ${evt.description || "-"}\n` +
-                 `**Einladen:** ${guests}\n\n` +
-                 `👉 *Ändern mit z.B.: "Zeit 14-16", "Titel Session", "Ort Berlin", "Einladen x@y.de"*\n` +
-                 `✅ *Sag "Ja" zum Eintragen, oder "Abbruch".*`;
-      };
-
+      // A) BESTÄTIGEN
       if (textLower === "ja" || textLower === "ok" || textLower === "bestätigen") {
           try {
-             await calendar.events.insert({ calendarId: pendingData.calId, resource: pendingData.event, sendUpdates: pendingData.sendUpdates });
+             await calendar.events.insert({ 
+                 calendarId: pendingData.calId, 
+                 resource: pendingData.event, 
+                 sendUpdates: pendingData.sendUpdates 
+             });
              pendingCalendar.delete(chatId); 
              return `✅ **Termin wurde eingetragen!**`;
-          } catch (e) { console.error(e); return "❌ Fehler von Google: " + e.message; }
+          } catch (e) { 
+             console.error(e); 
+             return "❌ Fehler von Google: " + e.message; 
+          }
       } 
+      // B) ABBRECHEN
       else if (textLower === "nein" || textLower === "abbruch") {
-          pendingCalendar.delete(chatId); return "Abgebrochen.";
+          pendingCalendar.delete(chatId); 
+          return "Abgebrochen.";
       }
+      // C) UPDATES (Das Menü bearbeiten)
       else {
           let updated = false;
-          // Behebt doppelte Bezeichnungen durch case-insensitive replace ("i")
           const val = text.replace(/^(titel|title|date|datum|zeit|time|ort|location|beschreibung|desc|einladen|invite)[:\s]+/i, "").trim();
 
           if (textLower.startsWith("titel") || textLower.startsWith("title")) { pendingData.event.summary = val; updated = true; }
@@ -174,7 +163,6 @@ const textLower = text.toLowerCase();
               }
           }
           else if (textLower.startsWith("zeit") || textLower.startsWith("time")) {
-              // Zeit-Logik (unverändert aus stabilen Parts)
               const times = text.match(/(\d{1,2})[:.]?(\d{2})?/g);
               if (times && times.length >= 1) {
                   const dStart = new Date(pendingData.event.start.dateTime || pendingData.event.start.date || new Date());
@@ -205,10 +193,11 @@ const textLower = text.toLowerCase();
 
           if (updated) {
               pendingCalendar.set(chatId, pendingData);
-              return renderMenu();
+              return renderMenu(pendingData);
           }
       }
   }
+
   
   // Laden aller Daten
   const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
