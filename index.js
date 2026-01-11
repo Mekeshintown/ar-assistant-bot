@@ -453,6 +453,7 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
     } 
     // --- FALL B: SCHREIBEN (Der neue Entwurf-Modus) ---
     else {
+      // 1. Event-Objekt vorbereiten
       const event = {
         summary: data.title || "Neuer Termin",
         start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
@@ -463,10 +464,11 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
         attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
       };
 
+      // 2. Im pendingCalendar speichern, damit die Bestätigungs-Schleife greift
       const pendingData = { calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" };
       pendingCalendar.set(chatId, pendingData);
       
-      // Nutzt jetzt deine schöne renderMenu Funktion
+      // 3. Dein einheitliches Menü mit "Ja / Abbruch" anzeigen
       return renderMenu(pendingData);
     }
   } catch (err) { 
