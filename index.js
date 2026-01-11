@@ -40,6 +40,8 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
 const chatContext = new Map();
+const pendingCalendar = new Map(); // Für die Sicherheits-Schleife
+const lastSessionData = new Map(); // Für das Session-Gedächtnis
 const app = express();
 app.use(express.json());
 
@@ -85,7 +87,41 @@ async function handleChat(chatId, text) {
   const fetchSafely = async (id) => {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
+  
+const textLower = text.toLowerCase();
 
+  // --- 1. SICHERHEITS-LOOP: KALENDER BESTÄTIGUNG ---
+  if (pendingCalendar.has(chatId)) {
+      const pendingData = pendingCalendar.get(chatId);
+
+      if (textLower.includes("ja") || textLower.includes("bestätigen") || textLower.includes("ok")) {
+          try {
+             // JETZT erst eintragen
+             await calendar.events.insert({ 
+                 calendarId: pendingData.calId, 
+                 resource: pendingData.event, 
+                 sendUpdates: pendingData.sendUpdates 
+             });
+             
+             pendingCalendar.delete(chatId); 
+             
+             // Ausführliche Bestätigung (Deutsche Zeit)
+             const startStr = new Date(pendingData.event.start.dateTime).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'full', timeStyle: 'short' });
+             return `✅ **Termin verbindlich eingetragen!**\n\n📌 **${pendingData.event.summary}**\n🗓 ${startStr}\n📍 ${pendingData.event.location || ""}\n📝 ${pendingData.event.description || ""}`;
+          } catch (e) { 
+             console.error(e); 
+             pendingCalendar.delete(chatId); 
+             return "❌ Fehler beim Eintragen in Google Calendar."; 
+          }
+      } 
+      else if (textLower.includes("nein") || textLower.includes("abbruch")) {
+          pendingCalendar.delete(chatId); 
+          return "Alles klar, Vorgang abgebrochen. Nichts wurde eingetragen.";
+      }
+      // Wenn User was anderes fragt (z.B. "Wie spät ist es?"), ignorieren wir den Loop hier nicht,
+      // sondern lassen ihn stehen, bis er Ja/Nein sagt.
+  }
+  
   // Laden aller Daten
   const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
     fetchSafely(DB_CONFIG),
@@ -97,7 +133,95 @@ async function handleChat(chatId, text) {
     fetchSafely(DB_PUBLISHING),
     fetchSafely(DB_CALENDARS) // NEU: Lädt deine Kalender-IDs aus Notion
   ]);
+  
+// --- 2. SESSION ZUSAMMENFASSUNG & SMART UPDATES ---
+  
+  // A) Zusammenfassung erstellen
+  if (textLower.includes("sessionzusammenfassung") || textLower.includes("zusammenfassung")) {
+      let studioInfo = { name: "", address: "", bell: "", contact: "" };
+      const foundStudio = studios.find(s => textLower.includes(s.Name.toLowerCase()));
+      if (foundStudio) { 
+          studioInfo = { 
+              name: foundStudio.Name || "", 
+              address: foundStudio.Address || foundStudio.Adresse || "", 
+              bell: foundStudio.Bell || foundStudio.Klingel || "", 
+              contact: foundStudio.Contact || foundStudio.Kontakt || "" 
+          }; 
+      }
 
+      // Config aus Notion holen (Tabelle "A&R Bot Config", Eintrag "Sessions")
+      const sessionConfig = config.find(c => c.Aufgabe === "Sessions")?.Anweisung || "";
+      
+      const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.(\d{2,4})?/);
+      let date = dateMatch ? dateMatch[0] : "";
+      if (date && date.split('.').length === 3 && date.split('.')[2] === "") date += new Date().getFullYear();
+      
+      const timeMatch = text.match(/\d{1,2}:\d{2}/);
+      let time = timeMatch ? timeMatch[0] : "12:00"; // Standard 12:00
+
+      const nameExtract = await openai.chat.completions.create({ model: "gpt-4o", messages: [ { role: "system", content: "Extrahiere NUR die Artist Namen (Artist A x Artist B). Ignoriere Datum/Studio. Gib String." }, { role: "user", content: text } ] });
+      let artists = nameExtract.choices[0].message.content.replace(/['"]+/g, '');
+
+      const sessionData = { artists, date, time, studioInfo };
+      lastSessionData.set(chatId, sessionData);
+
+      return `Session: ${artists}\nDate: ${date}\nStart: ${time}\nStudio: ${studioInfo.name}\nAddress: ${studioInfo.address}\nBell: ${studioInfo.bell}\nContact: ${studioInfo.contact}`;
+  }
+
+  // B) Smart Update: "Contact [Name]" -> Nummer suchen
+  if (lastSessionData.has(chatId) && (textLower.startsWith("contact") || textLower.startsWith("kontakt"))) {
+      const currentSession = lastSessionData.get(chatId);
+      const searchName = text.replace(/contact|kontakt/i, "").trim();
+      
+      // Suche in Artist Infos
+      const foundArtist = artistInfos.find(a => a.Name.toLowerCase().includes(searchName.toLowerCase()));
+      
+      if (foundArtist) {
+          const number = foundArtist.Telefonnummer || foundArtist.Phone || "";
+          // FORMATIERUNG: Nummer (Name)
+          const formattedContact = `${number} (${foundArtist.Name})`; 
+          
+          currentSession.studioInfo.contact = formattedContact;
+          lastSessionData.set(chatId, currentSession);
+          
+          return `Update: Kontakt geändert.\n\nSession: ${currentSession.artists}\nDate: ${currentSession.date}\nStart: ${currentSession.time}\nStudio: ${currentSession.studioInfo.name}\nAddress: ${currentSession.studioInfo.address}\nBell: ${currentSession.studioInfo.bell}\nContact: ${currentSession.studioInfo.contact}`;
+      }
+  }
+
+  // C) Trigger "Trag das ein" (Verbindung zum Kalender)
+  if ((textLower.includes("trag das ein") || textLower.includes("die session eintragen")) && lastSessionData.has(chatId)) {
+      const s = lastSessionData.get(chatId);
+      
+      // Kalender suchen (Standard: Mate)
+      let targetCalId = "mate.spellenberg.umusic@gmail.com";
+      let calName = "Mate";
+      const foundCal = calendarList.find(c => textLower.includes(c.Name.toLowerCase()));
+      if (foundCal) { targetCalId = foundCal["Calendar ID"]; calName = foundCal.Name; }
+      
+      // Zeit berechnen (Start + 6h)
+      const [day, month, year] = s.date.split('.');
+      const cleanYear = year.length === 2 ? "20" + year : year;
+      const [hours, minutes] = s.time.split(':');
+      const startDate = new Date(cleanYear, month - 1, day, hours, minutes);
+      const endDate = new Date(startDate.getTime() + 6 * 60 * 60 * 1000); 
+      
+      const eventResource = { 
+          summary: `Session: ${s.artists}`, 
+          location: s.studioInfo.address, 
+          description: `Contact: ${s.studioInfo.contact}\nBell: ${s.studioInfo.bell}\nStudio: ${s.studioInfo.name}`, 
+          start: { dateTime: startDate.toISOString(), timeZone: "Europe/Berlin" }, 
+          end: { dateTime: endDate.toISOString(), timeZone: "Europe/Berlin" } 
+      };
+
+      // In Pending speichern & Fragen
+      pendingCalendar.set(chatId, { calId: targetCalId, event: eventResource, sendUpdates: "none" });
+      lastSessionData.delete(chatId);
+
+      const startDisplay = startDate.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'short', timeStyle: 'short' });
+      return `📅 Ich habe folgenden Termin vorbereitet:\n\n**${eventResource.summary}**\n📍 ${eventResource.location}\n🕒 ${startDisplay} (6 Std)\nKalender: ${calName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
+  }
+
+  
  // --- KALENDER LOGIK (VERSION: PRO-DISPLAY & INVITES) ---
   const textLower = text.toLowerCase();
   const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
