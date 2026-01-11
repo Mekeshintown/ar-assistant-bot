@@ -406,33 +406,39 @@ const renderMenu = (pendingData) => {
       const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
       const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
 
-   const formatForGoogle = (dateStr) => {
-  if (!dateStr) return new Date().toISOString();
-  // Wenn der String nur das Datum (10 Zeichen) hat, hänge T00:00:00Z an
-  if (dateStr.length === 10) return `${dateStr}T00:00:00Z`;
-  // Wenn er 19 Zeichen hat (ohne Z), hänge Z an
-  return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
-};
-
+ const formatForGoogle = (dateStr) => {
+        if (!dateStr) return new Date().toISOString();
+        // Wenn nur das Datum (YYYY-MM-DD) kommt, hänge Zeit und Z an
+        if (dateStr.length === 10) return `${dateStr}T00:00:00Z`;
+        // Wenn Sekunden fehlen, hänge Z an
+        return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
+      };
+      
 // --- LESE MODUS (FIXED) ---
-if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("wann")) {
-  const response = await calendar.events.list({
-    calendarId: calId,
-    // Hier nutzen wir jetzt die Formatierungs-Funktion von oben
-    timeMin: formatForGoogle(data.start_iso),
-    timeMax: formatForGoogle(data.end_iso),
-    singleEvents: true,
-    orderBy: "startTime",
-  });
-  
-  const events = response.data.items;
-  if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
-  
-  return events.map(e => {
-    const start = new Date(e.start.dateTime || e.start.date);
-    return `• ${e.summary} (${start.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})`;
-  }).join("\n");
-}
+if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht")) {
+        const response = await calendar.events.list({
+          calendarId: calId,
+          // WICHTIG: Hier die Hilfsfunktion nutzen
+          timeMin: formatForGoogle(data.start_iso),
+          timeMax: formatForGoogle(data.end_iso),
+          singleEvents: true,
+          orderBy: "startTime",
+        });
+
+        const events = response.data.items;
+        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
+
+        // Termine schön auflisten
+        return events.map(e => {
+          const start = new Date(e.start.dateTime || e.start.date);
+          const time = e.start.dateTime 
+            ? start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) 
+            : "Ganztägig";
+          const date = start.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+          return `• ${date} (${time}): **${e.summary}**`;
+        }).join("\n");
+      }
+
       else {
         const event = {
           summary: data.title || "Neuer Termin",
