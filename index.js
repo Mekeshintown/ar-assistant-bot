@@ -90,14 +90,39 @@ async function handleChat(chatId, text) {
   
 const textLower = text.toLowerCase();
 
+  // --- UNIVERSAL HELPER: MENÜ TEXT GENERIEREN ---
+  const renderMenu = (pendingData) => {
+      const evt = pendingData.event;
+      const start = new Date(evt.start.dateTime || evt.start.date);
+      const dateStr = start.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
+      
+      let timeStr = "Ganztägig";
+      if (evt.start.dateTime) {
+          const sTime = start.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
+          const end = new Date(evt.end.dateTime);
+          const eTime = end.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
+          timeStr = `${sTime} - ${eTime}`;
+      }
+
+      const guests = (evt.attendees || []).map(a => a.email).join(", ") || "-";
+
+      return `📝 **Termin-Entwurf für: ${pendingData.calName || "Kalender"}**\n\n` +
+             `**Titel:** ${evt.summary}\n` +
+             `**Date:** ${dateStr}\n` +
+             `**Zeit:** ${timeStr}\n` +
+             `**Ort:** ${evt.location || "-"}\n` +
+             `**Beschreibung:** ${evt.description || "-"}\n` +
+             `**Einladen:** ${guests}\n\n` +
+             `👉 *Ändern mit z.B.: "Zeit 14-16", "Titel Session", "Ort Berlin"*\n` +
+             `❌ *Zum Abbrechen sag "Abbruch".*\n` +
+             `✅ *Sag "Ja" zum Eintragen.*`;
+  };
+  
+  
 // --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
   if (pendingCalendar.has(chatId)) {
       const pendingData = pendingCalendar.get(chatId);
-
-      const renderMenu = () => {
-          const evt = pendingData.event;
-          const start = new Date(evt.start.dateTime || evt.start.date);
-          const dateStr = start.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
+  
           
           let timeStr = "Ganztägig";
           if (evt.start.dateTime) {
@@ -213,16 +238,22 @@ const textLower = text.toLowerCase();
       }
 
       const sessionConfig = config.find(c => c.Aufgabe === "Sessions")?.Anweisung || "";
-      const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.(\d{2,4})?/);
-      let date = dateMatch ? dateMatch[0] : "";
+     
+    // Erkennt jetzt "25.01", "25.01.", "am 25.1" etc.
+      const dateMatch = text.match(/(\d{1,2})\.(\d{1,2})\.?(\d{2,4})?/);
+      let date = "";
+      const currentYear = new Date().getFullYear();
 
-      // FIX: Prüft, ob nur Tag und Monat da sind (z.B. "25.01" oder "25.01.")
-      if (date) {
-          const parts = date.split('.').filter(p => p.trim() !== "");
-          if (parts.length === 2) {
-              // Hängt das aktuelle Jahr an, damit es nicht zu 1900 wird
-              date = `${parts[0]}.${parts[1]}.${new Date().getFullYear()}`;
-          }
+      if (dateMatch) {
+          const d = dateMatch[1].padStart(2, '0');
+          const m = dateMatch[2].padStart(2, '0');
+          // Falls Jahr fehlt oder nur 2 Stellen hat (z.B. 26), wird es zu 2026 ergänzt
+          let y = dateMatch[3] ? (dateMatch[3].length === 2 ? "20" + dateMatch[3] : dateMatch[3]) : currentYear.toString();
+          date = `${d}.${m}.${y}`;
+      } else {
+          // Fallback auf heute, falls gar kein Datum im Satz steht
+          const now = new Date();
+          date = `${String(now.getDate()).padStart(2, '0')}.${String(now.getMonth()+1).padStart(2, '0')}.${currentYear}`;
       }
       
       const timeMatch = text.match(/\d{1,2}:\d{2}/);
@@ -281,36 +312,43 @@ const textLower = text.toLowerCase();
       }
   }
 
-  // C) Trigger "Trag das ein" (Verbindung zum Kalender)
-  // Jetzt lockerer: Reagiert auf "trag" + ("das" ODER "session")
+// C) Trigger "Trag das ein" (Verbindung zum Kalender)
   if (textLower.includes("trag") && (textLower.includes("das") || textLower.includes("session")) && lastSessionData.has(chatId)) {
       const s = lastSessionData.get(chatId);
       
-      // Welcher Kalender? Suchen wir im Satz (z.B. "in Mate's Kalender")
       let targetCalId = "mate.spellenberg.umusic@gmail.com";
       let calName = "Mate";
       const foundCal = calendarList.find(c => textLower.includes(c.Name.toLowerCase()));
       if (foundCal) { targetCalId = foundCal["Calendar ID"]; calName = foundCal.Name; }
       
-      const [day, month, year] = s.date.split('.');
-      const cleanYear = year.length === 2 ? "20" + year : year;
+      // DATUM-REPARATUR: Nutzt das Jahr aus der Session oder das aktuelle Server-Jahr
+      let [day, month, year] = (s.date || "").split('.');
+      const serverYear = new Date().getFullYear().toString();
+      
+      // Falls Jahr fehlt oder nur 2 Stellen hat, reparieren
+      if (!year || year.length < 4) year = serverYear;
+      
+      // Wir bauen den ISO-String direkt als Text, um 1900-Fehler zu umgehen
+      const cleanDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       const [hours, minutes] = s.time.split(':');
-      const startDate = new Date(cleanYear, month - 1, day, hours, minutes);
-      const endDate = new Date(startDate.getTime() + 6 * 60 * 60 * 1000); 
+      const startIso = `${cleanDate}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+      
+      // Endzeit berechnen (6 Stunden später)
+      const endDate = new Date(new Date(startIso).getTime() + 6 * 60 * 60 * 1000); 
       
       const eventResource = { 
           summary: `Session: ${s.artists}`, 
           location: s.studioInfo.address, 
           description: `Contact: ${s.studioInfo.contact}\nBell: ${s.studioInfo.bell}\nStudio: ${s.studioInfo.name}`, 
-          start: { dateTime: startDate.toISOString(), timeZone: "Europe/Berlin" }, 
+          start: { dateTime: startIso, timeZone: "Europe/Berlin" }, 
           end: { dateTime: endDate.toISOString(), timeZone: "Europe/Berlin" } 
       };
 
-      pendingCalendar.set(chatId, { calId: targetCalId, event: eventResource, sendUpdates: "none" });
+      pendingCalendar.set(chatId, { calId: targetCalId, calName: calName, event: eventResource, sendUpdates: "none" });
       lastSessionData.delete(chatId);
 
-      const startDisplay = startDate.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'short', timeStyle: 'short' });
-      return `📅 Ich habe folgenden Termin vorbereitet:\n\n**${eventResource.summary}**\n📍 ${eventResource.location}\n🕒 ${startDisplay} (6 Std)\nKalender: ${calName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
+      // Hier rufen wir das Menü auf, damit du "Ja" sagen kannst
+      return renderMenu({ calId: targetCalId, calName: calName, event: eventResource });
   }
   
 // --- 4. KALENDER LOGIK (ALLGEMEIN) ---
