@@ -376,94 +376,95 @@ const renderMenu = (pendingData) => {
   }
   
 // --- 4. KALENDER LOGIK (ALLGEMEIN) ---
-  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio", "buchen", "eintragen"];
-  
-  if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 && !textLower.includes("trag")) {
-    try {
-      const extraction = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: `Kalender-Assistent. 
-            Regeln:
-            1. Wenn der User fragt "wie sieht es aus", "was steht an" -> type: "read".
-            2. Wenn er "eintragen", "buchen" sagt -> type: "write".
-            3. Erfinde KEINE Titel oder Daten. Wenn Infos fehlen, lass sie leer.
-            Data: JSON (type, artist, start_iso, end_iso, title, attendees).` },
-          { role: "user", content: text }
-        ],
-        response_format: { type: "json_object" }
+const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio", "buchen", "eintragen"];
+
+if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 && !textLower.includes("trag")) {
+  try {
+    const extraction = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { 
+          role: "system", 
+          content: `Kalender-Assistent. Heute ist der ${new Date().toLocaleDateString('de-DE')}. 
+          Regeln:
+          1. Wenn der User kein Jahr nennt, nimm IMMER das Jahr von heute (${new Date().getFullYear()}).
+          2. Wenn der User fragt "wie sieht es aus", "was steht an" -> type: "read".
+          3. Wenn er "eintragen", "buchen" sagt -> type: "write".
+          4. Erfinde KEINE Titel oder Daten. Wenn Infos fehlen, lass sie leer.
+          Data: JSON (type, artist, start_iso, end_iso, title, attendees).` 
+        },
+        { role: "user", content: text }
+      ],
+      response_format: { type: "json_object" }
+    });
+
+    const data = JSON.parse(extraction.choices[0].message.content);
+    
+    const artistEntry = calendarList.find(c => {
+        const searchName = (data.artist || "").toLowerCase().trim();
+        const dbName = (c.Name || "").toLowerCase().trim();
+        return searchName && dbName.includes(searchName);
+    });
+
+    const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
+    const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
+
+    const formatForGoogle = (dateStr) => {
+      if (!dateStr) return new Date().toISOString();
+      if (dateStr.length === 10) return `${dateStr}T00:00:00Z`;
+      return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
+    };
+
+    if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht")) {
+      const response = await calendar.events.list({
+        calendarId: calId,
+        timeMin: formatForGoogle(data.start_iso),
+        timeMax: formatForGoogle(data.end_iso),
+        singleEvents: true,
+        orderBy: "startTime",
       });
 
-      const data = JSON.parse(extraction.choices[0].message.content);
-      
-      // Sucht den Kalender in deiner Notion-Liste
-      const artistEntry = calendarList.find(c => {
-          const searchName = (data.artist || "").toLowerCase().trim();
-          const dbName = (c.Name || "").toLowerCase().trim();
-          return searchName && dbName.includes(searchName);
-      });
-
-      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
-      const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
-
- const formatForGoogle = (dateStr) => {
-        if (!dateStr) return new Date().toISOString();
-        // Wenn nur das Datum (YYYY-MM-DD) kommt, hänge Zeit und Z an
-        if (dateStr.length === 10) return `${dateStr}T00:00:00Z`;
-        // Wenn Sekunden fehlen, hänge Z an
-        return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
-      };
-      
-// --- LESE MODUS (FIXED) ---
-const events = response.data.items;
+      const events = response.data.items;
       if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
 
-      const formatEventDate = (dateObj) => {
-        const d = new Date(dateObj.dateTime || dateObj.date);
-        const options = { weekday: 'short', day: '2-digit', month: '2-digit' };
-        let str = d.toLocaleDateString('de-DE', options);
-        if (dateObj.dateTime) {
-          str += ` (${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`;
-        }
-        return str;
-      };
-
       const eventList = events.map(e => {
-        const startStr = formatEventDate(e.start);
-        // Falls es ein mehrtägiger Termin ist (z.B. Urlaub)
+        const start = new Date(e.start.dateTime || e.start.date);
+        const startStr = start.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+        
+        let timeStr = "";
+        if (e.start.dateTime) {
+          timeStr = ` (${start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`;
+        }
+
         if (e.end && (e.end.date || e.end.dateTime)) {
-          const startDate = new Date(e.start.dateTime || e.start.date);
           const endDate = new Date(e.end.dateTime || e.end.date);
-          // Wenn Ende mehr als 24h nach Start liegt -> "bis" Format
-          if (endDate - startDate > 86400000) {
-            const endStr = new Date(e.end.date || e.end.dateTime).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
-            return `• ${startStr} bis ${endStr}: **${e.summary}** 🗓️`;
+          if (endDate - start > 86400000) {
+            const endDisplay = new Date(endDate.getTime() - 1000).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+            return `• ${startStr} bis ${endDisplay}: **${e.summary}** 🗓️`;
           }
         }
-        return `• ${startStr}: **${e.summary}**`;
+        return `• ${startStr}${timeStr}: **${e.summary}**`;
       }).join("\n");
 
       return `📅 Termine für **${artistName}**:\n${eventList}`;
-      }
+    } 
+    else {
+      const event = {
+        summary: data.title || "Neuer Termin",
+        start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
+        end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
+        attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
+      };
 
-      else {
-        const event = {
-          summary: data.title || "Neuer Termin",
-          start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
-          end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
-          attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
-        };
-
-        pendingCalendar.set(chatId, { calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" });
-
-        const d = new Date(event.start.dateTime);
-        const dateStr = d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
-        const timeStr = d.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
-
-      return renderMenu({ calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" });
-      }
-    } catch (err) { console.error(err); return "❌ Kalender-Fehler."; }
+      const pendingData = { calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" };
+      pendingCalendar.set(chatId, pendingData);
+      return renderMenu(pendingData);
+    }
+  } catch (err) { 
+    console.error(err); 
+    return "❌ Kalender-Fehler."; 
   }
+}
   
   // --- NORMALER CHAT / PITCH LOGIK ---
   let history = chatContext.get(chatId) || [];
