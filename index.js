@@ -90,36 +90,138 @@ async function handleChat(chatId, text) {
   
 const textLower = text.toLowerCase();
 
-  // --- 1. SICHERHEITS-LOOP: KALENDER BESTÄTIGUNG ---
+  // --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
+  
   if (pendingCalendar.has(chatId)) {
       const pendingData = pendingCalendar.get(chatId);
 
-      if (textLower.includes("ja") || textLower.includes("bestätigen") || textLower.includes("ok")) {
+      // Helper: Menü Text generieren
+      const renderMenu = () => {
+          const evt = pendingData.event;
+          const start = new Date(evt.start.dateTime || evt.start.date);
+          const dateStr = start.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
+          
+          let timeStr = "Ganztägig";
+          if (evt.start.dateTime) {
+              const sTime = start.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
+              const end = new Date(evt.end.dateTime);
+              const eTime = end.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
+              timeStr = `${sTime} - ${eTime}`;
+          }
+
+          const guests = (evt.attendees || []).map(a => a.email).join(", ") || "-";
+
+          return `📝 **Termin-Entwurf für: ${pendingData.calName || "Kalender"}**\n\n` +
+                 `**Titel:** ${evt.summary}\n` +
+                 `**Date:** ${dateStr}\n` +
+                 `**Zeit:** ${timeStr}\n` +
+                 `**Ort:** ${evt.location || "-"}\n` +
+                 `**Beschreibung:** ${evt.description || "-"}\n` +
+                 `**Einladen:** ${guests}\n\n` +
+                 `👉 *Ändern mit z.B.: "Zeit 14-16", "Titel Session", "Ort Berlin", "Einladen x@y.de"*\n` +
+                 `✅ *Sag "Ja" zum Eintragen.*`;
+      };
+
+      // A) BESTÄTIGEN
+      if (textLower === "ja" || textLower === "ok" || textLower === "bestätigen") {
           try {
-             // JETZT erst eintragen
              await calendar.events.insert({ 
                  calendarId: pendingData.calId, 
                  resource: pendingData.event, 
                  sendUpdates: pendingData.sendUpdates 
              });
-             
              pendingCalendar.delete(chatId); 
-             
-             // Ausführliche Bestätigung (Deutsche Zeit)
-             const startStr = new Date(pendingData.event.start.dateTime).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'full', timeStyle: 'short' });
-             return `✅ **Termin verbindlich eingetragen!**\n\n📌 **${pendingData.event.summary}**\n🗓 ${startStr}\n📍 ${pendingData.event.location || ""}\n📝 ${pendingData.event.description || ""}`;
+             return `✅ **Termin wurde eingetragen!**`;
           } catch (e) { 
              console.error(e); 
-             pendingCalendar.delete(chatId); 
-             return "❌ Fehler beim Eintragen in Google Calendar."; 
+             return "❌ Fehler von Google: " + e.message; 
           }
       } 
-      else if (textLower.includes("nein") || textLower.includes("abbruch")) {
+      // B) ABBRECHEN
+      else if (textLower === "nein" || textLower === "abbruch") {
           pendingCalendar.delete(chatId); 
-          return "Alles klar, Vorgang abgebrochen. Nichts wurde eingetragen.";
+          return "Abgebrochen.";
       }
-      // Wenn User was anderes fragt (z.B. "Wie spät ist es?"), ignorieren wir den Loop hier nicht,
-      // sondern lassen ihn stehen, bis er Ja/Nein sagt.
+      // C) UPDATES (Das Menü bearbeiten)
+      else {
+          let updated = false;
+          // Regex für Befehle am Anfang (z.B. "Titel: Session" oder "Zeit 14:00")
+          const val = text.replace(/^(titel|title|date|datum|zeit|time|ort|location|beschreibung|desc|einladen|invite)[:\s]+/, "").trim();
+
+          // 1. Titel
+          if (textLower.startsWith("titel") || textLower.startsWith("title")) {
+              pendingData.event.summary = val; updated = true;
+          }
+          // 2. Ort
+          else if (textLower.startsWith("ort") || textLower.startsWith("location")) {
+              pendingData.event.location = val; updated = true;
+          }
+          // 3. Beschreibung
+          else if (textLower.startsWith("beschreibung") || textLower.startsWith("desc")) {
+              pendingData.event.description = val; updated = true;
+          }
+          // 4. Einladen
+          else if (textLower.startsWith("einladen") || textLower.startsWith("invite")) {
+              const newEmails = text.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/g);
+              if (newEmails) {
+                  const current = pendingData.event.attendees || [];
+                  newEmails.forEach(email => current.push({ email }));
+                  pendingData.event.attendees = current;
+                  pendingData.sendUpdates = "all";
+                  updated = true;
+              }
+          }
+          // 5. Zeit & Datum (Kombiniert oder einzeln)
+          else if (textLower.startsWith("zeit") || textLower.startsWith("time")) {
+              if (textLower.includes("ganztägig")) {
+                  const d = new Date(pendingData.event.start.dateTime || pendingData.event.start.date).toISOString().split('T')[0];
+                  pendingData.event.start = { date: d }; pendingData.event.end = { date: d };
+                  updated = true;
+              } else {
+                  // Zeit parsen (z.B. "14:00" oder "14.30")
+                  const times = text.match(/(\d{1,2})[:.]?(\d{2})?/g);
+                  if (times && times.length >= 1) {
+                      const dStart = new Date(pendingData.event.start.dateTime || pendingData.event.start.date || new Date());
+                      let [h1, m1] = times[0].replace('.',':').split(':');
+                      dStart.setHours(parseInt(h1), m1 ? parseInt(m1) : 0);
+                      
+                      const dEnd = new Date(dStart);
+                      if (times.length >= 2) {
+                           let [h2, m2] = times[1].replace('.',':').split(':');
+                           dEnd.setHours(parseInt(h2), m2 ? parseInt(m2) : 0);
+                      } else { dEnd.setHours(dStart.getHours() + 1); }
+                      
+                      pendingData.event.start = { dateTime: dStart.toISOString(), timeZone: 'Europe/Berlin' };
+                      pendingData.event.end = { dateTime: dEnd.toISOString(), timeZone: 'Europe/Berlin' };
+                      updated = true;
+                  }
+              }
+          }
+          // 6. Nur Datum ändern
+          else if (textLower.startsWith("date") || textLower.startsWith("datum")) {
+               const dateMatch = text.match(/(\d{1,2})\.(\d{1,2})\.?(\d{2,4})?/);
+               if (dateMatch) {
+                  const day = parseInt(dateMatch[1]); const month = parseInt(dateMatch[2]);
+                  let year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
+                  if (year < 100) year += 2000;
+
+                  const updateISO = (iso) => { const d = new Date(iso||new Date()); d.setFullYear(year, month-1, day); return d.toISOString(); };
+                  if (pendingData.event.start.dateTime) {
+                      pendingData.event.start.dateTime = updateISO(pendingData.event.start.dateTime);
+                      pendingData.event.end.dateTime = updateISO(pendingData.event.end.dateTime);
+                  } else {
+                      const ymd = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+                      pendingData.event.start.date = ymd; pendingData.event.end.date = ymd;
+                  }
+                  updated = true;
+               }
+          }
+
+          if (updated) {
+              pendingCalendar.set(chatId, pendingData);
+              return renderMenu();
+          }
+      }
   }
   
   // Laden aller Daten
@@ -239,18 +341,15 @@ const textLower = text.toLowerCase();
       return `📅 Ich habe folgenden Termin vorbereitet:\n\n**${eventResource.summary}**\n📍 ${eventResource.location}\n🕒 ${startDisplay} (6 Std)\nKalender: ${calName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
   }
   
-// --- KALENDER LOGIK (ALLGEMEIN) ---
-  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
+// --- 4. KALENDER LOGIK (ALLGEMEIN) ---
+  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio", "buchen", "eintragen"];
   
   if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 && !textLower.includes("trag")) {
     try {
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { 
-            role: "system", 
-            content: `Kalender-Assistent. Data: JSON (type, artist, start_iso, end_iso, title, attendees).` 
-          },
+          { role: "system", content: `Kalender-Assistent. Data: JSON (type, artist, start_iso, end_iso, title, attendees).` },
           { role: "user", content: text }
         ],
         response_format: { type: "json_object" }
@@ -258,6 +357,7 @@ const textLower = text.toLowerCase();
 
       const data = JSON.parse(extraction.choices[0].message.content);
       const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
+      // WICHTIG: Hier holen wir den Kalender-Namen für die Anzeige
       const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
       const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
 
@@ -266,7 +366,7 @@ const textLower = text.toLowerCase();
         return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
       };
 
-      // --- LESE MODUS (Bleibt sofort) ---
+      // --- LESE MODUS ---
       if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("wann")) {
         const response = await calendar.events.list({
           calendarId: calId,
@@ -280,7 +380,7 @@ const textLower = text.toLowerCase();
         return events.map(e => `• ${e.summary} (${new Date(e.start.dateTime||e.start.date).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })})`).join("\n");
       } 
       
-      // --- SCHREIB MODUS (JETZT MIT SICHERHEITSSCHLEIFE) ---
+      // --- SCHREIB MODUS (MENÜ STARTEN) ---
       else {
         const event = {
           summary: data.title || "Neuer Termin",
@@ -291,11 +391,27 @@ const textLower = text.toLowerCase();
           description: ""
         };
 
-        // NICHT eintragen, nur speichern!
-        pendingCalendar.set(chatId, { calId: calId, event: event, sendUpdates: data.attendees ? "all" : "none" });
+        // Speichern inkl. Kalender-Name!
+        pendingCalendar.set(chatId, { 
+            calId: calId, 
+            calName: artistName, 
+            event: event, 
+            sendUpdates: data.attendees ? "all" : "none" 
+        });
 
-        const startDisplay = new Date(event.start.dateTime).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
-        return `📅 Ich habe folgenden Termin vorbereitet:\n\n**${event.summary}**\nStart: ${startDisplay}\nKalender: ${artistName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
+        // Erstes Menü anzeigen (Manuelle Generierung für den Start)
+        const d = new Date(event.start.dateTime);
+        const dateStr = d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
+        const timeStr = d.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
+
+        return `📝 **Neuer Entwurf für: ${artistName}**\n\n` +
+               `**Titel:** ${event.summary}\n` +
+               `**Date:** ${dateStr}\n` +
+               `**Zeit:** ${timeStr} (1 Std)\n` +
+               `**Ort:** -\n` +
+               `**Einladen:** ${(data.attendees||[]).join(", ") || "-"}\n\n` +
+               `👉 *Ergänze Infos wie "Ort Berlin", "Zeit 14-16", "Beschreibung Session".*\n` +
+               `✅ *Sag "Ja" zum Eintragen.*`;
       }
 
     } catch (err) {
