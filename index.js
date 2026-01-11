@@ -223,7 +223,7 @@ const textLower = text.toLowerCase();
 
   
  // --- KALENDER LOGIK (VERSION: PRO-DISPLAY & INVITES) ---
-  const textLower = text.toLowerCase();
+  
   const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
   
   if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
