@@ -91,9 +91,9 @@ async function handleChat(chatId, text) {
 const textLower = text.toLowerCase();
 
   // --- UNIVERSAL HELPER: MENÜ TEXT GENERIEREN ---
-  const renderMenu = (pendingData) => {
+const renderMenu = (pendingData) => {
       const evt = pendingData.event;
-      const start = new Date(evt.start.dateTime || evt.start.date);
+      const start = new Date(evt.start.dateTime || evt.start.date || new Date());
       const dateStr = start.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
       
       let timeStr = "Ganztägig";
@@ -106,15 +106,15 @@ const textLower = text.toLowerCase();
 
       const guests = (evt.attendees || []).map(a => a.email).join(", ") || "-";
 
-      return `📝 **Termin-Entwurf für: ${pendingData.calName || "Kalender"}**\n\n` +
+      return `📝 **Termin-Entwurf**\n\n` +
+             `**Kalender:** ${pendingData.calName || "Mate"}\n` + // <--- NEUE ZEILE
              `**Titel:** ${evt.summary}\n` +
              `**Date:** ${dateStr}\n` +
              `**Zeit:** ${timeStr}\n` +
              `**Ort:** ${evt.location || "-"}\n` +
              `**Beschreibung:** ${evt.description || "-"}\n` +
              `**Einladen:** ${guests}\n\n` +
-             `👉 *Ändern mit z.B.: "Zeit 14-16", "Titel Session", "Ort Berlin"*\n` +
-             `❌ *Zum Abbrechen sag "Abbruch".*\n` +
+             `👉 *Ändern mit z.B.: "Zeit 14-16", "Ort Berlin"*\n` +
              `✅ *Sag "Ja" zum Eintragen.*`;
   };
   
@@ -401,13 +401,7 @@ const textLower = text.toLowerCase();
         const dateStr = d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
         const timeStr = d.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
 
-        return `📝 **Neuer Entwurf für: ${artistName}**\n\n` +
-               `**Titel:** ${event.summary}\n` +
-               `**Date:** ${dateStr}\n` +
-               `**Zeit:** ${timeStr} (1 Std)\n` +
-               `**Ort:** -\n\n` +
-               `👉 *Ergänze Infos wie "Ort Berlin", "Zeit 14-16".*\n` +
-               `✅ *Sag "Ja" zum Eintragen.*`;
+      return renderMenu({ calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" });
       }
     } catch (err) { console.error(err); return "❌ Kalender-Fehler."; }
   }
