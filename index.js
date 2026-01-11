@@ -400,6 +400,7 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
 
     const data = JSON.parse(extraction.choices[0].message.content);
     
+    // Kalender suchen
     const artistEntry = calendarList.find(c => {
         const searchName = (data.artist || "").toLowerCase().trim();
         const dbName = (c.Name || "").toLowerCase().trim();
@@ -415,6 +416,7 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
       return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
     };
 
+    // --- FALL A: LESEN (Wochenübersicht) ---
     if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht")) {
       const response = await calendar.events.list({
         calendarId: calId,
@@ -436,6 +438,7 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
           timeStr = ` (${start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`;
         }
 
+        // Urlaubs-/Mehrtages-Logik
         if (e.end && (e.end.date || e.end.dateTime)) {
           const endDate = new Date(e.end.dateTime || e.end.date);
           if (endDate - start > 86400000) {
@@ -448,21 +451,27 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
 
       return `📅 Termine für **${artistName}**:\n${eventList}`;
     } 
+    // --- FALL B: SCHREIBEN (Der neue Entwurf-Modus) ---
     else {
       const event = {
         summary: data.title || "Neuer Termin",
         start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
-        end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
+        end: { 
+          dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), 
+          timeZone: "Europe/Berlin" 
+        },
         attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
       };
 
       const pendingData = { calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" };
       pendingCalendar.set(chatId, pendingData);
+      
+      // Nutzt jetzt deine schöne renderMenu Funktion
       return renderMenu(pendingData);
     }
   } catch (err) { 
-    console.error(err); 
-    return "❌ Kalender-Fehler."; 
+    console.error("Kalender-Fehler:", err); 
+    return "❌ Kalender-Fehler. Bitte prüfe Künstler und Zeitraum."; 
   }
 }
   
