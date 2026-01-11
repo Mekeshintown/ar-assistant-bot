@@ -95,13 +95,13 @@ const renderMenu = (pendingData) => {
       const evt = pendingData.event;
       
       // DATUM: Wir nehmen einfach das, was im String steht (YYYY-MM-DD)
-      const dPart = (evt.start.dateTime || "").split('T')[0];
+      const dPart = (evt.start.dateTime || "").split('T')[0] || "2026-01-01";
       const [y, m, d] = dPart.split('-');
       const dateStr = `${d}.${m}.${y}`;
       
       let timeStr = "Ganztägig";
       if (evt.start.dateTime) {
-          // Wir schneiden die Zeit direkt aus dem ISO-String aus: "2026-01-25T12:00:00" -> "12:00"
+          // Wir schneiden die Zeit direkt aus dem ISO-String aus: "12:00:00" -> "12:00"
           const sTime = evt.start.dateTime.split('T')[1].substring(0, 5);
           const eTime = evt.end.dateTime.split('T')[1].substring(0, 5);
           timeStr = `${sTime} - ${eTime}`;
@@ -117,7 +117,7 @@ const renderMenu = (pendingData) => {
              `**Ort:** ${evt.location || "-"}\n` +
              `**Beschreibung:** ${evt.description || "-"}\n` +
              `**Einladen:** ${guests}\n\n` +
-             `👉 *Ändern mit z.B.: "Zeit 14-16", "Ort Berlin"*\n` +
+             `👉 *Ändern mit z.B.: "Zeit 14-16", "Ort Berlin"*\n\n` +
              `✅ **Ja** (Eintragen)\n` +
              `❌ **Abbruch** (Löschen)`;
   };
