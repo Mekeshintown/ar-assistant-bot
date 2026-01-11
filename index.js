@@ -40,8 +40,7 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
 const chatContext = new Map();
-const pendingCalendar = new Map(); // Für die 
--Schleife
+const pendingCalendar = new Map(); // Für die Sicherheits-Schleife
 const lastSessionData = new Map(); // Für das Session-Gedächtnis
 const app = express();
 app.use(express.json());
