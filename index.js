@@ -118,7 +118,8 @@ const renderMenu = (pendingData) => {
              `**Beschreibung:** ${evt.description || "-"}\n` +
              `**Einladen:** ${guests}\n\n` +
              `👉 *Ändern mit z.B.: "Zeit 14-16", "Ort Berlin"*\n` +
-             `✅ *Sag "Ja" zum Eintragen.*`;
+             `✅ **Ja** (Eintragen)\n` +
+             `❌ **Abbruch** (Löschen)`;
   };
   
   
