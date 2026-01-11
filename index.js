@@ -216,9 +216,13 @@ const textLower = text.toLowerCase();
       const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.(\d{2,4})?/);
       let date = dateMatch ? dateMatch[0] : "";
 
-      // FIX: Wenn Jahr fehlt (z.B. "25.01."), aktuelles Jahr anhängen (verhindert 1900-Fehler)
-      if (date && date.split('.').filter(p => p.trim() !== "").length === 2) {
-          date += "." + new Date().getFullYear();
+      // FIX: Prüft, ob nur Tag und Monat da sind (z.B. "25.01" oder "25.01.")
+      if (date) {
+          const parts = date.split('.').filter(p => p.trim() !== "");
+          if (parts.length === 2) {
+              // Hängt das aktuelle Jahr an, damit es nicht zu 1900 wird
+              date = `${parts[0]}.${parts[1]}.${new Date().getFullYear()}`;
+          }
       }
       
       const timeMatch = text.match(/\d{1,2}:\d{2}/);
