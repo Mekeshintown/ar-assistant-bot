@@ -90,12 +90,10 @@ async function handleChat(chatId, text) {
   
 const textLower = text.toLowerCase();
 
-  // --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
-  
+// --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
   if (pendingCalendar.has(chatId)) {
       const pendingData = pendingCalendar.get(chatId);
 
-      // Helper: Menü Text generieren
       const renderMenu = () => {
           const evt = pendingData.event;
           const start = new Date(evt.start.dateTime || evt.start.date);
@@ -119,48 +117,27 @@ const textLower = text.toLowerCase();
                  `**Beschreibung:** ${evt.description || "-"}\n` +
                  `**Einladen:** ${guests}\n\n` +
                  `👉 *Ändern mit z.B.: "Zeit 14-16", "Titel Session", "Ort Berlin", "Einladen x@y.de"*\n` +
-                 `✅ *Sag "Ja" zum Eintragen.*`;
+                 `✅ *Sag "Ja" zum Eintragen, oder "Abbruch".*`;
       };
 
-      // A) BESTÄTIGEN
       if (textLower === "ja" || textLower === "ok" || textLower === "bestätigen") {
           try {
-             await calendar.events.insert({ 
-                 calendarId: pendingData.calId, 
-                 resource: pendingData.event, 
-                 sendUpdates: pendingData.sendUpdates 
-             });
+             await calendar.events.insert({ calendarId: pendingData.calId, resource: pendingData.event, sendUpdates: pendingData.sendUpdates });
              pendingCalendar.delete(chatId); 
              return `✅ **Termin wurde eingetragen!**`;
-          } catch (e) { 
-             console.error(e); 
-             return "❌ Fehler von Google: " + e.message; 
-          }
+          } catch (e) { console.error(e); return "❌ Fehler von Google: " + e.message; }
       } 
-      // B) ABBRECHEN
       else if (textLower === "nein" || textLower === "abbruch") {
-          pendingCalendar.delete(chatId); 
-          return "Abgebrochen.";
+          pendingCalendar.delete(chatId); return "Abgebrochen.";
       }
-      // C) UPDATES (Das Menü bearbeiten)
       else {
           let updated = false;
-          // Regex für Befehle am Anfang (z.B. "Titel: Session" oder "Zeit 14:00")
-          const val = text.replace(/^(titel|title|date|datum|zeit|time|ort|location|beschreibung|desc|einladen|invite)[:\s]+/, "").trim();
+          // Behebt doppelte Bezeichnungen durch case-insensitive replace ("i")
+          const val = text.replace(/^(titel|title|date|datum|zeit|time|ort|location|beschreibung|desc|einladen|invite)[:\s]+/i, "").trim();
 
-          // 1. Titel
-          if (textLower.startsWith("titel") || textLower.startsWith("title")) {
-              pendingData.event.summary = val; updated = true;
-          }
-          // 2. Ort
-          else if (textLower.startsWith("ort") || textLower.startsWith("location")) {
-              pendingData.event.location = val; updated = true;
-          }
-          // 3. Beschreibung
-          else if (textLower.startsWith("beschreibung") || textLower.startsWith("desc")) {
-              pendingData.event.description = val; updated = true;
-          }
-          // 4. Einladen
+          if (textLower.startsWith("titel") || textLower.startsWith("title")) { pendingData.event.summary = val; updated = true; }
+          else if (textLower.startsWith("ort") || textLower.startsWith("location")) { pendingData.event.location = val; updated = true; }
+          else if (textLower.startsWith("beschreibung") || textLower.startsWith("desc")) { pendingData.event.description = val; updated = true; }
           else if (textLower.startsWith("einladen") || textLower.startsWith("invite")) {
               const newEmails = text.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/g);
               if (newEmails) {
@@ -171,48 +148,32 @@ const textLower = text.toLowerCase();
                   updated = true;
               }
           }
-          // 5. Zeit & Datum (Kombiniert oder einzeln)
           else if (textLower.startsWith("zeit") || textLower.startsWith("time")) {
-              if (textLower.includes("ganztägig")) {
-                  const d = new Date(pendingData.event.start.dateTime || pendingData.event.start.date).toISOString().split('T')[0];
-                  pendingData.event.start = { date: d }; pendingData.event.end = { date: d };
+              // Zeit-Logik (unverändert aus stabilen Parts)
+              const times = text.match(/(\d{1,2})[:.]?(\d{2})?/g);
+              if (times && times.length >= 1) {
+                  const dStart = new Date(pendingData.event.start.dateTime || pendingData.event.start.date || new Date());
+                  let [h1, m1] = times[0].replace('.',':').split(':');
+                  dStart.setHours(parseInt(h1), m1 ? parseInt(m1) : 0);
+                  const dEnd = new Date(dStart);
+                  if (times.length >= 2) {
+                       let [h2, m2] = times[1].replace('.',':').split(':');
+                       dEnd.setHours(parseInt(h2), m2 ? parseInt(m2) : 0);
+                  } else { dEnd.setHours(dStart.getHours() + 1); }
+                  pendingData.event.start = { dateTime: dStart.toISOString(), timeZone: 'Europe/Berlin' };
+                  pendingData.event.end = { dateTime: dEnd.toISOString(), timeZone: 'Europe/Berlin' };
                   updated = true;
-              } else {
-                  // Zeit parsen (z.B. "14:00" oder "14.30")
-                  const times = text.match(/(\d{1,2})[:.]?(\d{2})?/g);
-                  if (times && times.length >= 1) {
-                      const dStart = new Date(pendingData.event.start.dateTime || pendingData.event.start.date || new Date());
-                      let [h1, m1] = times[0].replace('.',':').split(':');
-                      dStart.setHours(parseInt(h1), m1 ? parseInt(m1) : 0);
-                      
-                      const dEnd = new Date(dStart);
-                      if (times.length >= 2) {
-                           let [h2, m2] = times[1].replace('.',':').split(':');
-                           dEnd.setHours(parseInt(h2), m2 ? parseInt(m2) : 0);
-                      } else { dEnd.setHours(dStart.getHours() + 1); }
-                      
-                      pendingData.event.start = { dateTime: dStart.toISOString(), timeZone: 'Europe/Berlin' };
-                      pendingData.event.end = { dateTime: dEnd.toISOString(), timeZone: 'Europe/Berlin' };
-                      updated = true;
-                  }
               }
           }
-          // 6. Nur Datum ändern
           else if (textLower.startsWith("date") || textLower.startsWith("datum")) {
                const dateMatch = text.match(/(\d{1,2})\.(\d{1,2})\.?(\d{2,4})?/);
                if (dateMatch) {
                   const day = parseInt(dateMatch[1]); const month = parseInt(dateMatch[2]);
                   let year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
                   if (year < 100) year += 2000;
-
                   const updateISO = (iso) => { const d = new Date(iso||new Date()); d.setFullYear(year, month-1, day); return d.toISOString(); };
-                  if (pendingData.event.start.dateTime) {
-                      pendingData.event.start.dateTime = updateISO(pendingData.event.start.dateTime);
-                      pendingData.event.end.dateTime = updateISO(pendingData.event.end.dateTime);
-                  } else {
-                      const ymd = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-                      pendingData.event.start.date = ymd; pendingData.event.end.date = ymd;
-                  }
+                  pendingData.event.start.dateTime = updateISO(pendingData.event.start.dateTime);
+                  pendingData.event.end.dateTime = updateISO(pendingData.event.end.dateTime);
                   updated = true;
                }
           }
@@ -238,7 +199,7 @@ const textLower = text.toLowerCase();
   
 // --- 2. SESSION ZUSAMMENFASSUNG & SMART UPDATES ---
   
-  // A) Zusammenfassung erstellen
+// A) Zusammenfassung erstellen
   if (textLower.includes("sessionzusammenfassung") || textLower.includes("zusammenfassung")) {
       let studioInfo = { name: "", address: "", bell: "", contact: "" };
       const foundStudio = studios.find(s => textLower.includes(s.Name.toLowerCase()));
@@ -254,12 +215,19 @@ const textLower = text.toLowerCase();
       const sessionConfig = config.find(c => c.Aufgabe === "Sessions")?.Anweisung || "";
       const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.(\d{2,4})?/);
       let date = dateMatch ? dateMatch[0] : "";
-      if (date && date.split('.').length === 3 && date.split('.')[2] === "") date += new Date().getFullYear();
+
+      // FIX: Wenn Jahr fehlt (z.B. "25.01."), aktuelles Jahr anhängen (verhindert 1900-Fehler)
+      if (date && date.split('.').filter(p => p.trim() !== "").length === 2) {
+          date += "." + new Date().getFullYear();
+      }
       
       const timeMatch = text.match(/\d{1,2}:\d{2}/);
       let time = timeMatch ? timeMatch[0] : "12:00"; 
 
-      const nameExtract = await openai.chat.completions.create({ model: "gpt-4o", messages: [ { role: "system", content: "Extrahiere NUR die Artist Namen (Artist A x Artist B). Ignoriere Datum/Studio. Gib String." }, { role: "user", content: text } ] });
+      const nameExtract = await openai.chat.completions.create({ 
+          model: "gpt-4o", 
+          messages: [ { role: "system", content: "Extrahiere NUR die Artist Namen (Artist A x Artist B). Ignoriere Datum/Studio. Gib String." }, { role: "user", content: text } ] 
+      });
       let artists = nameExtract.choices[0].message.content.replace(/['"]+/g, '');
 
       const sessionData = { artists, date, time, studioInfo };
@@ -349,15 +317,26 @@ const textLower = text.toLowerCase();
       const extraction = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: `Kalender-Assistent. Data: JSON (type, artist, start_iso, end_iso, title, attendees).` },
+          { role: "system", content: `Kalender-Assistent. 
+            Regeln:
+            1. Wenn der User fragt "wie sieht es aus", "was steht an" -> type: "read".
+            2. Wenn er "eintragen", "buchen" sagt -> type: "write".
+            3. Erfinde KEINE Titel oder Daten. Wenn Infos fehlen, lass sie leer.
+            Data: JSON (type, artist, start_iso, end_iso, title, attendees).` },
           { role: "user", content: text }
         ],
         response_format: { type: "json_object" }
       });
 
       const data = JSON.parse(extraction.choices[0].message.content);
-      const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
-      // WICHTIG: Hier holen wir den Kalender-Namen für die Anzeige
+      
+      // Sucht den Kalender in deiner Notion-Liste
+      const artistEntry = calendarList.find(c => {
+          const searchName = (data.artist || "").toLowerCase().trim();
+          const dbName = (c.Name || "").toLowerCase().trim();
+          return searchName && dbName.includes(searchName);
+      });
+
       const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
       const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
 
@@ -366,8 +345,7 @@ const textLower = text.toLowerCase();
         return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
       };
 
-      // --- LESE MODUS ---
-      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("wann")) {
+      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht")) {
         const response = await calendar.events.list({
           calendarId: calId,
           timeMin: formatForGoogle(data.start_iso),
@@ -379,27 +357,16 @@ const textLower = text.toLowerCase();
         if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
         return events.map(e => `• ${e.summary} (${new Date(e.start.dateTime||e.start.date).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })})`).join("\n");
       } 
-      
-      // --- SCHREIB MODUS (MENÜ STARTEN) ---
       else {
         const event = {
           summary: data.title || "Neuer Termin",
           start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
           end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
-          attendees: data.attendees ? data.attendees.map(email => ({ email })) : [],
-          location: "",
-          description: ""
+          attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
         };
 
-        // Speichern inkl. Kalender-Name!
-        pendingCalendar.set(chatId, { 
-            calId: calId, 
-            calName: artistName, 
-            event: event, 
-            sendUpdates: data.attendees ? "all" : "none" 
-        });
+        pendingCalendar.set(chatId, { calId, calName: artistName, event, sendUpdates: data.attendees ? "all" : "none" });
 
-        // Erstes Menü anzeigen (Manuelle Generierung für den Start)
         const d = new Date(event.start.dateTime);
         const dateStr = d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
         const timeStr = d.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
@@ -408,63 +375,13 @@ const textLower = text.toLowerCase();
                `**Titel:** ${event.summary}\n` +
                `**Date:** ${dateStr}\n` +
                `**Zeit:** ${timeStr} (1 Std)\n` +
-               `**Ort:** -\n` +
-               `**Einladen:** ${(data.attendees||[]).join(", ") || "-"}\n\n` +
-               `👉 *Ergänze Infos wie "Ort Berlin", "Zeit 14-16", "Beschreibung Session".*\n` +
+               `**Ort:** -\n\n` +
+               `👉 *Ergänze Infos wie "Ort Berlin", "Zeit 14-16".*\n` +
                `✅ *Sag "Ja" zum Eintragen.*`;
       }
-
-    } catch (err) {
-      console.error("Calendar Error:", err);
-      return "❌ Kalender-Fehler.";
-    }
+    } catch (err) { console.error(err); return "❌ Kalender-Fehler."; }
   }
-  
-  // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? (Airtable) ---
-  const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
-  if (triggerWords.some(word => text.toLowerCase().includes(word)) && !text.toLowerCase().includes("termin")) {
-    try {
-      const extraction = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { 
-            role: "system", 
-            content: `Du bist ein Daten-Extraktor. Extrahiere Kontaktdaten.
-            Mögliche Felder: Artist_Name, Contact_FirstName, Contact_LastName, Email, Label_Name, Genre, Prio.
-            Gib NUR ein valides JSON Objekt zurück.
-            Entscheide ob es in die Tabelle "Artist Pitch" oder "Label Pitch" gehört (Key: "table").` 
-          },
-          { role: "user", content: text }
-        ],
-        response_format: { type: "json_object" }
-      });
-
-      const result = JSON.parse(extraction.choices[0].message.content);
-      const tableName = result.table || (text.toLowerCase().includes("label") ? "Label Pitch" : "Artist Pitch");
-      
-      let finalFields = {};
-      if (tableName === "Artist Pitch") {
-        if (result.Artist_Name) finalFields.Artist_Name = result.Artist_Name;
-        if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
-        if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
-        if (result.Email) finalFields.Email = result.Email;
-        if (result.Genre) finalFields.Genre = result.Genre;
-        if (result.Prio) finalFields.Prio = result.Prio;
-      } else {
-        if (result.Label_Name) finalFields.Label_Name = result.Label_Name;
-        if (result.Contact_FirstName) finalFields.Contact_FirstName = result.Contact_FirstName;
-        if (result.Contact_LastName) finalFields.Contact_LastName = result.Contact_LastName;
-        if (result.Email) finalFields.Email = result.Email;
-      }
-
-      await airtableBase(tableName).create([{ fields: finalFields }]);
-      return `✅ Erfolgreich gespeichert in ${tableName}:\n\n👤 ${finalFields.Contact_FirstName || ""} ${finalFields.Contact_LastName || ""}\n📧 ${finalFields.Email}`;
-    } catch (error) {
-      console.error("Airtable Save Error:", error);
-      return "❌ Fehler beim Speichern in Airtable.";
-    }
-  }
-
+  
   // --- NORMALER CHAT / PITCH LOGIK ---
   let history = chatContext.get(chatId) || [];
   history.push({ role: "user", content: text });
