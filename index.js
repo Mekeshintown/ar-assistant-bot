@@ -164,28 +164,44 @@ const renderMenu = (pendingData) => {
                   updated = true;
               }
           }
-          else if (textLower.startsWith("zeit") || textLower.startsWith("time")) {
-            // Anstatt .toISOString() bauen wir den String manuell
-                  const toIso = (d) => {
+        else if (textLower.startsWith("zeit") || textLower.startsWith("time")) {
+              const times = text.match(/(\d{1,2})[:.]?(\d{2})?/g);
+              if (times && times.length >= 1) {
+                  const dStart = new Date(pendingData.event.start.dateTime || pendingData.event.start.date || new Date());
+                  let [h1, m1] = times[0].replace('.',':').split(':');
+                  dStart.setHours(parseInt(h1), m1 ? parseInt(m1) : 0);
+                  const dEnd = new Date(dStart);
+                  if (times.length >= 2) {
+                       let [h2, m2] = times[1].replace('.',':').split(':');
+                       dEnd.setHours(parseInt(h2), m2 ? parseInt(m2) : 0);
+                  } else { dEnd.setHours(dStart.getHours() + 1); }
+
+                  // Hilfsfunktion für Text-ISO (kein Zeitzonen-Shift)
+                  const toIsoText = (d) => {
                       return d.getFullYear() + "-" + 
                              String(d.getMonth()+1).padStart(2, '0') + "-" + 
                              String(d.getDate()).padStart(2, '0') + "T" + 
                              String(d.getHours()).padStart(2, '0') + ":" + 
                              String(d.getMinutes()).padStart(2, '0') + ":00";
                   };
-                  
-                  pendingData.event.start = { dateTime: toIso(dStart), timeZone: 'Europe/Berlin' };
-                  pendingData.event.end = { dateTime: toIso(dEnd), timeZone: 'Europe/Berlin' };
+
+                  pendingData.event.start = { dateTime: toIsoText(dStart), timeZone: 'Europe/Berlin' };
+                  pendingData.event.end = { dateTime: toIsoText(dEnd), timeZone: 'Europe/Berlin' };
                   updated = true;
               }
-          }
+          } // <--- Diese Klammer hat bei dir vermutlich gefehlt!
           else if (textLower.startsWith("date") || textLower.startsWith("datum")) {
                const dateMatch = text.match(/(\d{1,2})\.(\d{1,2})\.?(\d{2,4})?/);
                if (dateMatch) {
                   const day = parseInt(dateMatch[1]); const month = parseInt(dateMatch[2]);
-                  let year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
-                  if (year < 100) year += 2000;
-                  const updateISO = (iso) => { const d = new Date(iso||new Date()); d.setFullYear(year, month-1, day); return d.toISOString(); };
+                  let year = dateMatch[3] ? (dateMatch[3].length === 2 ? "20" + dateMatch[3] : dateMatch[3]) : new Date().getFullYear();
+                  
+                  const updateISO = (iso) => {
+                      const d = new Date(iso || new Date());
+                      d.setFullYear(parseInt(year), month - 1, day);
+                      return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,'0') + "-" + String(d.getDate()).padStart(2,'0') + "T" + String(d.getHours()).padStart(2,'0') + ":" + String(d.getMinutes()).padStart(2,'0') + ":00";
+                  };
+                  
                   pendingData.event.start.dateTime = updateISO(pendingData.event.start.dateTime);
                   pendingData.event.end.dateTime = updateISO(pendingData.event.end.dateTime);
                   updated = true;
