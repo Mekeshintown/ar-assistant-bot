@@ -320,7 +320,8 @@ const renderMenu = (pendingData) => {
   }
 
 // C) Trigger "Trag das ein" (Verbindung zum Kalender)
-  if (textLower.includes("trag") && (textLower.includes("das") || textLower.includes("session")) && lastSessionData.has(chatId)) {
+  // Reagiert jetzt auf: "trag das", "trag ein", "trag session", "trage ein"
+  if (textLower.includes("trag") && (textLower.includes("das") || textLower.includes("session") || textLower.includes("ein")) && lastSessionData.has(chatId)) {
       const s = lastSessionData.get(chatId);
       
       let targetCalId = "mate.spellenberg.umusic@gmail.com";
