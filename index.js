@@ -309,34 +309,42 @@ const renderMenu = (pendingData) => {
       const foundCal = calendarList.find(c => textLower.includes(c.Name.toLowerCase()));
       if (foundCal) { targetCalId = foundCal["Calendar ID"]; calName = foundCal.Name; }
       
-      // DATUM-REPARATUR: Nutzt das Jahr aus der Session oder das aktuelle Server-Jahr
+      // 1. DATUM & ZEIT VORBEREITEN
       let [day, month, year] = (s.date || "").split('.');
       const serverYear = new Date().getFullYear().toString();
-      
-      // Falls Jahr fehlt oder nur 2 Stellen hat, reparieren
       if (!year || year.length < 4) year = serverYear;
       
-      // Wir bauen den ISO-String direkt als Text, um 1900-Fehler zu umgehen
       const cleanDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       const [hours, minutes] = s.time.split(':');
+      
+      // 2. START-ZEIT (Wir bauen den String manuell: YYYY-MM-DDTHH:mm:ss)
+      // WICHTIG: Kein "Z" am Ende, damit Google die timeZone "Europe/Berlin" eins zu eins übernimmt.
       const startIso = `${cleanDate}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
       
-      // Endzeit berechnen (6 Stunden später)
-      const endDate = new Date(new Date(startIso).getTime() + 6 * 60 * 60 * 1000); 
+      // 3. END-ZEIT BERECHNEN (6 Stunden später)
+      const dStart = new Date(startIso); 
+      const dEnd = new Date(dStart.getTime() + 6 * 60 * 60 * 1000);
+      
+      // End-String manuell bauen statt .toISOString() zu nutzen (verhindert den +1h Shift)
+      const endIso = dEnd.getFullYear() + "-" + 
+                     String(dEnd.getMonth()+1).padStart(2, '0') + "-" + 
+                     String(dEnd.getDate()).padStart(2, '0') + "T" + 
+                     String(dEnd.getHours()).padStart(2, '0') + ":" + 
+                     String(dEnd.getMinutes()).padStart(2, '0') + ":00";
       
       const eventResource = { 
           summary: `Session: ${s.artists}`, 
           location: s.studioInfo.address, 
           description: `Contact: ${s.studioInfo.contact}\nBell: ${s.studioInfo.bell}\nStudio: ${s.studioInfo.name}`, 
           start: { dateTime: startIso, timeZone: "Europe/Berlin" }, 
-          end: { dateTime: endDate.toISOString(), timeZone: "Europe/Berlin" } 
+          end: { dateTime: endIso, timeZone: "Europe/Berlin" } 
       };
 
-      pendingCalendar.set(chatId, { calId: targetCalId, calName: calName, event: eventResource, sendUpdates: "none" });
+      const pendingData = { calId: targetCalId, calName: calName, event: eventResource, sendUpdates: "none" };
+      pendingCalendar.set(chatId, pendingData);
       lastSessionData.delete(chatId);
 
-      // Hier rufen wir das Menü auf, damit du "Ja" sagen kannst
-      return renderMenu({ calId: targetCalId, calName: calName, event: eventResource });
+      return renderMenu(pendingData);
   }
   
 // --- 4. KALENDER LOGIK (ALLGEMEIN) ---
