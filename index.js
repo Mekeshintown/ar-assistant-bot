@@ -149,15 +149,13 @@ const textLower = text.toLowerCase();
           }; 
       }
 
-      // Config aus Notion holen (Tabelle "A&R Bot Config", Eintrag "Sessions")
       const sessionConfig = config.find(c => c.Aufgabe === "Sessions")?.Anweisung || "";
-      
       const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.(\d{2,4})?/);
       let date = dateMatch ? dateMatch[0] : "";
       if (date && date.split('.').length === 3 && date.split('.')[2] === "") date += new Date().getFullYear();
       
       const timeMatch = text.match(/\d{1,2}:\d{2}/);
-      let time = timeMatch ? timeMatch[0] : "12:00"; // Standard 12:00
+      let time = timeMatch ? timeMatch[0] : "12:00"; 
 
       const nameExtract = await openai.chat.completions.create({ model: "gpt-4o", messages: [ { role: "system", content: "Extrahiere NUR die Artist Namen (Artist A x Artist B). Ignoriere Datum/Studio. Gib String." }, { role: "user", content: text } ] });
       let artists = nameExtract.choices[0].message.content.replace(/['"]+/g, '');
@@ -168,37 +166,58 @@ const textLower = text.toLowerCase();
       return `Session: ${artists}\nDate: ${date}\nStart: ${time}\nStudio: ${studioInfo.name}\nAddress: ${studioInfo.address}\nBell: ${studioInfo.bell}\nContact: ${studioInfo.contact}`;
   }
 
-  // B) Smart Update: "Contact [Name]" -> Nummer suchen
-  if (lastSessionData.has(chatId) && (textLower.startsWith("contact") || textLower.startsWith("kontakt"))) {
-      const currentSession = lastSessionData.get(chatId);
-      const searchName = text.replace(/contact|kontakt/i, "").trim();
-      
-      // Suche in Artist Infos
-      const foundArtist = artistInfos.find(a => a.Name.toLowerCase().includes(searchName.toLowerCase()));
-      
-      if (foundArtist) {
-          const number = foundArtist.Telefonnummer || foundArtist.Phone || "";
-          // FORMATIERUNG: Nummer (Name)
-          const formattedContact = `${number} (${foundArtist.Name})`; 
-          
-          currentSession.studioInfo.contact = formattedContact;
-          lastSessionData.set(chatId, currentSession);
-          
-          return `Update: Kontakt geändert.\n\nSession: ${currentSession.artists}\nDate: ${currentSession.date}\nStart: ${currentSession.time}\nStudio: ${currentSession.studioInfo.name}\nAddress: ${currentSession.studioInfo.address}\nBell: ${currentSession.studioInfo.bell}\nContact: ${currentSession.studioInfo.contact}`;
+  // B) FLEXIBLES UPDATE (Bell, Start, Contact, Studio, Date)
+  // Wir prüfen, ob wir eine aktive Session haben und der User ein Keyword nennt
+  if (lastSessionData.has(chatId)) {
+      const s = lastSessionData.get(chatId);
+      let updated = false;
+
+      // Logik: "Keyword: Wert" oder "Keyword Wert"
+      if (textLower.startsWith("contact") || textLower.startsWith("kontakt")) {
+          const searchName = text.replace(/contact|kontakt/i, "").replace(":", "").trim();
+          const foundArtist = artistInfos.find(a => a.Name.toLowerCase().includes(searchName.toLowerCase()));
+          if (foundArtist) {
+             s.studioInfo.contact = `${foundArtist.Telefonnummer || foundArtist.Phone || ""} (${foundArtist.Name})`;
+             updated = true;
+          } else {
+             s.studioInfo.contact = searchName; // Manuelle Eingabe
+             updated = true;
+          }
+      }
+      else if (textLower.startsWith("bell") || textLower.startsWith("klingel")) {
+          s.studioInfo.bell = text.replace(/bell|klingel/i, "").replace(":", "").trim();
+          updated = true;
+      }
+      else if (textLower.startsWith("start") || textLower.startsWith("zeit")) {
+          s.time = text.replace(/start|zeit/i, "").replace(":", "").trim();
+          updated = true;
+      }
+      else if (textLower.startsWith("date") || textLower.startsWith("datum")) {
+          s.date = text.replace(/date|datum/i, "").replace(":", "").trim();
+          updated = true;
+      }
+      else if (textLower.startsWith("studio")) {
+          s.studioInfo.name = text.replace(/studio/i, "").replace(":", "").trim();
+          updated = true;
+      }
+
+      if (updated) {
+          lastSessionData.set(chatId, s);
+          return `Update übernommen.\n\nSession: ${s.artists}\nDate: ${s.date}\nStart: ${s.time}\nStudio: ${s.studioInfo.name}\nAddress: ${s.studioInfo.address}\nBell: ${s.studioInfo.bell}\nContact: ${s.studioInfo.contact}`;
       }
   }
 
   // C) Trigger "Trag das ein" (Verbindung zum Kalender)
-  if ((textLower.includes("trag das ein") || textLower.includes("die session eintragen")) && lastSessionData.has(chatId)) {
+  // Jetzt lockerer: Reagiert auf "trag" + ("das" ODER "session")
+  if (textLower.includes("trag") && (textLower.includes("das") || textLower.includes("session")) && lastSessionData.has(chatId)) {
       const s = lastSessionData.get(chatId);
       
-      // Kalender suchen (Standard: Mate)
+      // Welcher Kalender? Suchen wir im Satz (z.B. "in Mate's Kalender")
       let targetCalId = "mate.spellenberg.umusic@gmail.com";
       let calName = "Mate";
       const foundCal = calendarList.find(c => textLower.includes(c.Name.toLowerCase()));
       if (foundCal) { targetCalId = foundCal["Calendar ID"]; calName = foundCal.Name; }
       
-      // Zeit berechnen (Start + 6h)
       const [day, month, year] = s.date.split('.');
       const cleanYear = year.length === 2 ? "20" + year : year;
       const [hours, minutes] = s.time.split(':');
@@ -213,115 +232,77 @@ const textLower = text.toLowerCase();
           end: { dateTime: endDate.toISOString(), timeZone: "Europe/Berlin" } 
       };
 
-      // In Pending speichern & Fragen
       pendingCalendar.set(chatId, { calId: targetCalId, event: eventResource, sendUpdates: "none" });
       lastSessionData.delete(chatId);
 
       const startDisplay = startDate.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'short', timeStyle: 'short' });
       return `📅 Ich habe folgenden Termin vorbereitet:\n\n**${eventResource.summary}**\n📍 ${eventResource.location}\n🕒 ${startDisplay} (6 Std)\nKalender: ${calName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
   }
-
   
- // --- KALENDER LOGIK (VERSION: PRO-DISPLAY & INVITES) ---
+// --- KALENDER LOGIK (ALLGEMEIN) ---
+  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
   
-  const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio"];
-  
-  if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5) {
-    try {
-      const extraction = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { 
-            role: "system", 
-            content: `Du bist ein Kalender-Assistent. Heute ist ${new Date().toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
-            Künstler: ${calendarList.map(c => c.Name).join(", ")}.
-            
-            Aufgabe:
-            1. type: "read" (Abfragen) oder "write" (Eintragen).
-            2. artist: Name aus der Liste.
-            3. start_iso & end_iso: ISO-Strings (YYYY-MM-DDTHH:mm:ss).
-            4. title: Titel (nur write).
-            5. attendees: Extrahiere E-Mail-Adressen, falls der User jemanden einladen will (als Array).
-            
-            Gib NUR JSON zurück.` 
-          },
-          { role: "user", content: text }
-        ],
-        response_format: { type: "json_object" }
-      });
+  if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 && !textLower.includes("trag")) {
+    try {
+      const extraction = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { 
+            role: "system", 
+            content: `Kalender-Assistent. Data: JSON (type, artist, start_iso, end_iso, title, attendees).` 
+          },
+          { role: "user", content: text }
+        ],
+        response_format: { type: "json_object" }
+      });
 
-      const data = JSON.parse(extraction.choices[0].message.content);
-      const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
-      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
-      const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
+      const data = JSON.parse(extraction.choices[0].message.content);
+      const artistEntry = calendarList.find(c => data.artist && c.Name.toLowerCase().trim() === data.artist.toLowerCase().trim());
+      const calId = (artistEntry && artistEntry["Calendar ID"]) ? artistEntry["Calendar ID"].trim() : "mate.spellenberg.umusic@gmail.com";
+      const artistName = artistEntry ? artistEntry.Name : (data.artist || "Mate");
 
-      const formatForGoogle = (dateStr) => {
-        if (!dateStr) return new Date().toISOString();
-        return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
-      };
+      const formatForGoogle = (dateStr) => {
+        if (!dateStr) return new Date().toISOString();
+        return dateStr.length === 19 ? `${dateStr}Z` : dateStr;
+      };
 
-      // --- FALL A: TERMINE LESEN (MIT VERBESSERTER ANZEIGE) ---
-      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("zeit")) {
-        const response = await calendar.events.list({
-          calendarId: calId,
-          timeMin: formatForGoogle(data.start_iso),
-          timeMax: formatForGoogle(data.end_iso),
-          singleEvents: true,
-          orderBy: "startTime",
-        });
+      // --- LESE MODUS (Bleibt sofort) ---
+      if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht") || textLower.includes("wann")) {
+        const response = await calendar.events.list({
+          calendarId: calId,
+          timeMin: formatForGoogle(data.start_iso),
+          timeMax: formatForGoogle(data.end_iso),
+          singleEvents: true,
+          orderBy: "startTime",
+        });
+        const events = response.data.items;
+        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
+        return events.map(e => `• ${e.summary} (${new Date(e.start.dateTime||e.start.date).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })})`).join("\n");
+      } 
+      
+      // --- SCHREIB MODUS (JETZT MIT SICHERHEITSSCHLEIFE) ---
+      else {
+        const event = {
+          summary: data.title || "Neuer Termin",
+          start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
+          end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
+          attendees: data.attendees ? data.attendees.map(email => ({ email })) : [],
+          location: "",
+          description: ""
+        };
 
-        const events = response.data.items;
-        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** im Zeitraum gefunden.`;
+        // NICHT eintragen, nur speichern!
+        pendingCalendar.set(chatId, { calId: calId, event: event, sendUpdates: data.attendees ? "all" : "none" });
 
-        let list = `📅 **Termine für ${artistName}:**\n`;
-        events.forEach(e => {
-          const start = new Date(e.start.dateTime || e.start.date);
-          const end = new Date(e.end.dateTime || e.end.date);
-          
-          // Formatierung Wochentag & Datum
-          const dateStr = start.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
-          
-          // Prüfen ob Ganztägig oder Mehrtägig
-          const isAllDay = !e.start.dateTime;
-          const isMultiDay = (end - start) > 24 * 60 * 60 * 1000;
+        const startDisplay = new Date(event.start.dateTime).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
+        return `📅 Ich habe folgenden Termin vorbereitet:\n\n**${event.summary}**\nStart: ${startDisplay}\nKalender: ${artistName}\n\nSoll ich das **eintragen**? (Ja/Nein)`;
+      }
 
-          if (isMultiDay) {
-            const endStr = end.toLocaleString('de-DE', { day: '2-digit', month: '2-digit' });
-            list += `• ${dateStr} bis ${endStr}: **${e.summary}** 🗓️\n`;
-          } else {
-            const timeStr = isAllDay ? "Ganztägig" : start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-            list += `• ${dateStr} (${timeStr}): **${e.summary}**\n`;
-          }
-        });
-        return list;
-      } 
-      
-      // --- FALL B: TERMIN EINTRAGEN (MIT EINLADUNGEN) ---
-      else {
-        const event = {
-          summary: data.title || "Neuer Termin",
-          start: { dateTime: formatForGoogle(data.start_iso), timeZone: "Europe/Berlin" },
-          end: { dateTime: formatForGoogle(data.end_iso) || new Date(new Date(formatForGoogle(data.start_iso)).getTime() + 60 * 60000).toISOString(), timeZone: "Europe/Berlin" },
-          // Einladungen hinzufügen
-          attendees: data.attendees ? data.attendees.map(email => ({ email })) : []
-        };
-
-        await calendar.events.insert({ 
-          calendarId: calId, 
-          resource: event,
-          sendUpdates: data.attendees ? "all" : "none" // Verschickt Mails an Teilnehmer
-        });
-
-        let msg = `✅ Termin eingetragen für **${artistName}**\n📌 ${data.title}\n⏰ ${new Date(formatForGoogle(data.start_iso)).toLocaleString('de-DE')}`;
-        if (data.attendees && data.attendees.length > 0) msg += `\n✉️ Einladungen an: ${data.attendees.join(", ")}`;
-        return msg;
-      }
-
-    } catch (err) {
-      console.error("Calendar Error:", err);
-      return "❌ Kalender-Fehler. Bitte prüfe Künstler und Zeitraum.";
-    }
-  }
+    } catch (err) {
+      console.error("Calendar Error:", err);
+      return "❌ Kalender-Fehler.";
+    }
+  }
   
   // --- CHECK: SOLL ETWAS GESPEICHERT WERDEN? (Airtable) ---
   const triggerWords = ["speichere", "adden", "adde", "hinzufügen", "eintragen"];
