@@ -309,7 +309,7 @@ const renderMenu = (pendingData) => {
       const foundCal = calendarList.find(c => textLower.includes(c.Name.toLowerCase()));
       if (foundCal) { targetCalId = foundCal["Calendar ID"]; calName = foundCal.Name; }
       
-      // 1. DATUM & ZEIT VORBEREITEN
+      // 1. DATUM-TEILE EXTRAHIEREN
       let [day, month, year] = (s.date || "").split('.');
       const serverYear = new Date().getFullYear().toString();
       if (!year || year.length < 4) year = serverYear;
@@ -317,20 +317,28 @@ const renderMenu = (pendingData) => {
       const cleanDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       const [hours, minutes] = s.time.split(':');
       
-      // 2. START-ZEIT (Wir bauen den String manuell: YYYY-MM-DDTHH:mm:ss)
-      // WICHTIG: Kein "Z" am Ende, damit Google die timeZone "Europe/Berlin" eins zu eins übernimmt.
+      // 2. START-ZEIT ALS REINER TEXT (Kein Date-Objekt!)
       const startIso = `${cleanDate}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
       
-      // 3. END-ZEIT BERECHNEN (6 Stunden später)
-      const dStart = new Date(startIso); 
-      const dEnd = new Date(dStart.getTime() + 6 * 60 * 60 * 1000);
-      
-      // End-String manuell bauen statt .toISOString() zu nutzen (verhindert den +1h Shift)
-      const endIso = dEnd.getFullYear() + "-" + 
-                     String(dEnd.getMonth()+1).padStart(2, '0') + "-" + 
-                     String(dEnd.getDate()).padStart(2, '0') + "T" + 
-                     String(dEnd.getHours()).padStart(2, '0') + ":" + 
-                     String(dEnd.getMinutes()).padStart(2, '0') + ":00";
+      // 3. END-ZEIT MANUELL BERECHNEN (+6 Stunden)
+      // Wir rechnen nur mit der Zahl, damit JavaScript keine Zeitzonen einmischt
+      let endHours = parseInt(hours) + 6;
+      let endDay = parseInt(day);
+      let endMonth = parseInt(month);
+      let endYear = parseInt(year);
+
+      // Falls die Session über Mitternacht geht (sehr wichtig!)
+      if (endHours >= 24) {
+          endHours -= 24;
+          // Einfache Logik für den nächsten Tag (reicht für Sessions meist aus)
+          const tempDate = new Date(endYear, endMonth - 1, endDay + 1);
+          endDay = tempDate.getDate();
+          endMonth = tempDate.getMonth() + 1;
+          endYear = tempDate.getFullYear();
+      }
+
+      const cleanEndDate = `${endYear}-${String(endMonth).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+      const endIso = `${cleanEndDate}T${String(endHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
       
       const eventResource = { 
           summary: `Session: ${s.artists}`, 
