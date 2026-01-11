@@ -93,21 +93,24 @@ const textLower = text.toLowerCase();
   // --- UNIVERSAL HELPER: MENÜ TEXT GENERIEREN ---
 const renderMenu = (pendingData) => {
       const evt = pendingData.event;
-      const start = new Date(evt.start.dateTime || evt.start.date || new Date());
-      const dateStr = start.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
+      
+      // DATUM: Wir nehmen einfach das, was im String steht (YYYY-MM-DD)
+      const dPart = (evt.start.dateTime || "").split('T')[0];
+      const [y, m, d] = dPart.split('-');
+      const dateStr = `${d}.${m}.${y}`;
       
       let timeStr = "Ganztägig";
       if (evt.start.dateTime) {
-          const sTime = start.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
-          const end = new Date(evt.end.dateTime);
-          const eTime = end.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute:'2-digit' });
+          // Wir schneiden die Zeit direkt aus dem ISO-String aus: "2026-01-25T12:00:00" -> "12:00"
+          const sTime = evt.start.dateTime.split('T')[1].substring(0, 5);
+          const eTime = evt.end.dateTime.split('T')[1].substring(0, 5);
           timeStr = `${sTime} - ${eTime}`;
       }
 
       const guests = (evt.attendees || []).map(a => a.email).join(", ") || "-";
 
       return `📝 **Termin-Entwurf**\n\n` +
-             `**Kalender:** ${pendingData.calName || "Mate"}\n` + // <--- NEUE ZEILE
+             `**Kalender:** ${pendingData.calName || "Mate"}\n` + 
              `**Titel:** ${evt.summary}\n` +
              `**Date:** ${dateStr}\n` +
              `**Zeit:** ${timeStr}\n` +
@@ -162,18 +165,17 @@ const renderMenu = (pendingData) => {
               }
           }
           else if (textLower.startsWith("zeit") || textLower.startsWith("time")) {
-              const times = text.match(/(\d{1,2})[:.]?(\d{2})?/g);
-              if (times && times.length >= 1) {
-                  const dStart = new Date(pendingData.event.start.dateTime || pendingData.event.start.date || new Date());
-                  let [h1, m1] = times[0].replace('.',':').split(':');
-                  dStart.setHours(parseInt(h1), m1 ? parseInt(m1) : 0);
-                  const dEnd = new Date(dStart);
-                  if (times.length >= 2) {
-                       let [h2, m2] = times[1].replace('.',':').split(':');
-                       dEnd.setHours(parseInt(h2), m2 ? parseInt(m2) : 0);
-                  } else { dEnd.setHours(dStart.getHours() + 1); }
-                  pendingData.event.start = { dateTime: dStart.toISOString(), timeZone: 'Europe/Berlin' };
-                  pendingData.event.end = { dateTime: dEnd.toISOString(), timeZone: 'Europe/Berlin' };
+            // Anstatt .toISOString() bauen wir den String manuell
+                  const toIso = (d) => {
+                      return d.getFullYear() + "-" + 
+                             String(d.getMonth()+1).padStart(2, '0') + "-" + 
+                             String(d.getDate()).padStart(2, '0') + "T" + 
+                             String(d.getHours()).padStart(2, '0') + ":" + 
+                             String(d.getMinutes()).padStart(2, '0') + ":00";
+                  };
+                  
+                  pendingData.event.start = { dateTime: toIso(dStart), timeZone: 'Europe/Berlin' };
+                  pendingData.event.end = { dateTime: toIso(dEnd), timeZone: 'Europe/Berlin' };
                   updated = true;
               }
           }
