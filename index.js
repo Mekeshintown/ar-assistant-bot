@@ -415,28 +415,35 @@ const renderMenu = (pendingData) => {
       };
       
 // --- LESE MODUS (FIXED) ---
-if (data.type === "read" || textLower.includes("wie sieht") || textLower.includes("was steht")) {
-        const response = await calendar.events.list({
-          calendarId: calId,
-          // WICHTIG: Hier die Hilfsfunktion nutzen
-          timeMin: formatForGoogle(data.start_iso),
-          timeMax: formatForGoogle(data.end_iso),
-          singleEvents: true,
-          orderBy: "startTime",
-        });
+const events = response.data.items;
+      if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
 
-        const events = response.data.items;
-        if (!events || events.length === 0) return `📅 Keine Termine für **${artistName}** gefunden.`;
+      const formatEventDate = (dateObj) => {
+        const d = new Date(dateObj.dateTime || dateObj.date);
+        const options = { weekday: 'short', day: '2-digit', month: '2-digit' };
+        let str = d.toLocaleDateString('de-DE', options);
+        if (dateObj.dateTime) {
+          str += ` (${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`;
+        }
+        return str;
+      };
 
-        // Termine schön auflisten
-        return events.map(e => {
-          const start = new Date(e.start.dateTime || e.start.date);
-          const time = e.start.dateTime 
-            ? start.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) 
-            : "Ganztägig";
-          const date = start.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
-          return `• ${date} (${time}): **${e.summary}**`;
-        }).join("\n");
+      const eventList = events.map(e => {
+        const startStr = formatEventDate(e.start);
+        // Falls es ein mehrtägiger Termin ist (z.B. Urlaub)
+        if (e.end && (e.end.date || e.end.dateTime)) {
+          const startDate = new Date(e.start.dateTime || e.start.date);
+          const endDate = new Date(e.end.dateTime || e.end.date);
+          // Wenn Ende mehr als 24h nach Start liegt -> "bis" Format
+          if (endDate - startDate > 86400000) {
+            const endStr = new Date(e.end.date || e.end.dateTime).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+            return `• ${startStr} bis ${endStr}: **${e.summary}** 🗓️`;
+          }
+        }
+        return `• ${startStr}: **${e.summary}**`;
+      }).join("\n");
+
+      return `📅 Termine für **${artistName}**:\n${eventList}`;
       }
 
       else {
