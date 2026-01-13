@@ -41,6 +41,7 @@ const airtableBase = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BA
 
 const chatContext = new Map();
 const pendingCalendar = new Map(); // Für die Sicherheits-Schleife
+const pendingAirtable = new Map(); // Für die Airtable-Bestätigung
 const lastSessionData = new Map(); // Für das Session-Gedächtnis
 const app = express();
 app.use(express.json());
@@ -124,6 +125,22 @@ const renderMenu = (pendingData) => {
   
   
 // --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
+  // A) AIRTABLE BESTÄTIGUNG
+  if (pendingAirtable.has(chatId)) {
+      const pending = pendingAirtable.get(chatId);
+      if (textLower === "ja" || textLower === "ok") {
+          try {
+              await airtableBase(pending.table).create([{ fields: pending.fields }]);
+              pendingAirtable.delete(chatId);
+              return `✅ Erfolgreich in **${pending.table}** gespeichert!`;
+          } catch (e) { return "❌ Airtable Fehler: " + e.message; }
+      } else if (textLower === "nein" || textLower === "abbruch") {
+          pendingAirtable.delete(chatId);
+          return "Speichern abgebrochen.";
+      }
+  }
+
+  // B) KALENDER BESTÄTIGUNG (Dein bestehender Code)
   if (pendingCalendar.has(chatId)) {
       const pendingData = pendingCalendar.get(chatId);
 
@@ -374,7 +391,39 @@ const renderMenu = (pendingData) => {
 
       return renderMenu(pendingData);
   }
-  
+
+// --- 3. AIRTABLE LOGIK (NEU MIT BESTÄTIGUNG) ---
+const airtableTriggers = ["speichere", "adden", "adde", "hinzufügen", "eintragen", "airtable"];
+if (airtableTriggers.some(word => textLower.includes(word)) && !textLower.includes("termin") && !textLower.includes("kalender")) {
+    try {
+        const extraction = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+                { 
+                    role: "system", 
+                    content: `Du bist ein Daten-Extraktor für Airtable.
+                    Tabellen & Felder (basierend auf Screenshots):
+                    1. "Artist Pitch": Artist_Name, Contact_FirstName, Contact_LastName, Email, Genre, Prio.
+                    2. "Label Pitch": Label_Name, Contact_FirstName, Contact_LastName, Email, Type, Prio.
+                    
+                    Entscheide welche Tabelle passt. Gib NUR JSON zurück: {"table": "...", "fields": {...}}` 
+                },
+                { role: "user", content: text }
+            ],
+            response_format: { type: "json_object" }
+        });
+
+        const result = JSON.parse(extraction.choices[0].message.content);
+        pendingAirtable.set(chatId, result);
+
+        let summary = `📋 **Airtable-Entwurf (${result.table})**\n\n`;
+        for (const [key, val] of Object.entries(result.fields)) {
+            summary += `**${key}:** ${val}\n`;
+        }
+        return summary + `\n✅ **Ja** zum Speichern\n❌ **Abbruch**`;
+    } catch (e) { return "❌ Fehler bei der Airtable-Extraktion."; }
+}
+
 // --- 4. KALENDER LOGIK (ALLGEMEIN) ---
 const calendarTriggers = ["termin", "kalender", "einplanen", "meeting", "woche", "heute", "morgen", "anstehen", "zeit", "plan", "session", "studio", "buchen", "eintragen"];
 
