@@ -303,8 +303,9 @@ const renderMenu = (pendingData) => {
       }
   }
 
-  // --- LABELCOPY SESSION MODUS ---
-  session = activeSession.get(chatId);
+// --- LABELCOPY SESSION MODUS ---
+  let session = activeSession.get(chatId);
+  const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc";
 
   if (session && (textLower === "fertig" || textLower === "session löschen")) {
       activeSession.delete(chatId);
@@ -317,51 +318,72 @@ const renderMenu = (pendingData) => {
   }
 
   if (session) {
+      // 1. SCHRITT: KÜNSTLER NAME
       if (session.step === "awaiting_artist") {
           session.artist = text; session.step = "awaiting_title";
           activeSession.set(chatId, session);
           return `Notiert: **${text}**. Wie lautet der **Titel** des Songs?`;
       }
+      
+      // 2. SCHRITT: TITEL & INITIALES SETUP (Hier kommen die Rules rein!)
       if (session.step === "awaiting_title") {
           session.title = text; session.step = "active";
-// Holt die spezifischen Regeln aus der Config-Datenbank
-    const configs = await fetchFullDatabase(DB_CONFIG);
-    const lcRules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
-    
-const extraction = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [
-        { 
-            role: "system", 
-            content: `Du bist ein Assistent für Musik-Metadaten. 
-            Extrahiere Infos für die Felder: Artist, Version, Genre, Time, Recording Country, Written by, Published by, Produced by, Mastered by, Mixed by, Vocals by, Programming by, Bass by, Drums by, Keys by, Synth by, Splits, Lyrics.
-            SEI FLEXIBEL: Wenn der User schreibt "Mastering hat XY gemacht" oder "Mix von XY", ordne es 'Mastered by' oder 'Mixed by' zu. Du brauchst keinen Doppelpunkt.
-            Gib NUR JSON zurück.` 
-        }, 
-        { role: "user", content: text }
-    ],
-    response_format: { type: "json_object" }
-});
           
+          // Regeln laden (Wir holen sie frisch aus der DB_CONFIG)
+          const configs = await fetchFullDatabase(DB_CONFIG);
+          const lcRules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
+
+          // KI fragen: Was muss basierend auf den Rules ausgefüllt werden?
+          const initialExtraction = await openai.chat.completions.create({
+              model: "gpt-4o",
+              messages: [
+                  { role: "system", content: `Du bist ein Musik-Metadaten Experte. Nutze diese PRESET-REGELN: ${lcRules}. Wenn der Artist im Preset vorkommt, fülle alle Felder (Produced by, Written by etc.) entsprechend aus. Gib NUR JSON.` },
+                  { role: "user", content: `Neuer Song - Artist: ${session.artist}, Titel: ${text}` }
+              ],
+              response_format: { type: "json_object" }
+          });
+
+          const initialData = JSON.parse(initialExtraction.choices[0].message.content);
+          const finalProps = buildNotionProps({ Artist: session.artist, Titel: text, ...initialData });
+
           const newPage = await notion.pages.create({ 
               parent: { database_id: DB_LABELCOPIES }, 
-              properties: buildNotionProps({ Artist: session.artist, Titel: session.title }) 
+              properties: finalProps 
           });
+          
           session.pageId = newPage.id;
           activeSession.set(chatId, session);
           return await showFullMask(chatId, newPage.id);
       }
+      
+      // 3. SCHRITT: EXPORT
       if (textLower.includes("exportieren")) {
            const res = await generateWordDoc(chatId, session.pageId);
            activeSession.delete(chatId); 
            return res;
       }
       
+      // 4. LAUFENDE UPDATES (Hier machen wir ihn flexibel!)
+      const configs = await fetchFullDatabase(DB_CONFIG);
+      const lcRules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
+
       const extraction = await openai.chat.completions.create({
           model: "gpt-4o",
-          messages: [{ role: "system", content: "Extrahiere Labelcopy-Infos. Gib NUR JSON." }, { role: "user", content: text }],
+          messages: [
+              { 
+                role: "system", 
+                content: `Extrahiere Labelcopy-Daten. 
+                REGELN: ${lcRules}
+                FLEXIBILITÄT: Der User schreibt natürlich. "Mastering von XY" -> Mastered by: XY. "Mix macht XY" -> Mixed by: XY. 
+                Du brauchst KEINE Doppelpunkte. 
+                Wichtig: Wenn der User Splits nennt (z.B. 50/50), trage sie exakt so unter 'Splits' ein.
+                Gib NUR JSON zurück.` 
+              }, 
+              { role: "user", content: text }
+          ],
           response_format: { type: "json_object" }
       });
+
       const updateData = JSON.parse(extraction.choices[0].message.content);
       if (Object.keys(updateData).length > 0) {
           await notion.pages.update({ page_id: session.pageId, properties: buildNotionProps(updateData) });
