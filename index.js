@@ -433,7 +433,8 @@ if (airtableTriggers.some(word => textLower.includes(word)) && !textLower.includ
     if (result.fields.Genre && typeof result.fields.Genre === "string") {
     result.fields.Genre = result.fields.Genre.split(',').map(g => g.trim());
 }
-
+        pendingAirtable.set(chatId, result);
+      
         let summary = `📋 **Airtable-Entwurf (${result.table})**\n\n`;
         // Wir zeigen die Felder schön sortiert an
         if (result.fields.Artist_Name) summary += `**Artist:** ${result.fields.Artist_Name}\n`;
