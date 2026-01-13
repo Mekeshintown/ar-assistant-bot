@@ -70,10 +70,16 @@ function parseProperties(properties) {
 }
 
 async function fetchFullDatabase(id) {
-  try {
-    const res = await notion.databases.query({ database_id: id });
-    return res.results.map(p => parseProperties(p.properties));
-  } catch (e) { return []; }
+  try {
+    const res = await notion.databases.query({ database_id: id });
+    // Hier fügen wir die id der Seite explizit zum Objekt hinzu:
+    return res.results.map(p => ({ 
+        id: p.id, 
+        ...parseProperties(p.properties) 
+    }));
+  } catch (e) { 
+    return []; 
+  }
 }
 
 async function fetchAirtableData(tableName) {
@@ -311,6 +317,46 @@ const renderMenu = (pendingData) => {
       return "Check. Labelcopy-Session geschlossen.";
   }
 
+// --- LABELCOPY RECALL (Weiterarbeiten) ---
+  const recallTriggers = ["stand", "status", "zeig mir", "weiterarbeiten", "laden", "öffne"];
+  if (recallTriggers.some(t => textLower.includes(t)) && !session && (textLower.includes("lc") || textLower.includes("labelcopy") || textLower.includes("song"))) {
+        const lcs = await fetchFullDatabase(DB_LABELCOPIES);
+        // Suche nach Übereinstimmung von Artist oder Titel im Text
+        const found = lcs.find(l => 
+            (l.Titel && textLower.includes(l.Titel.toLowerCase())) || 
+            (l.Artist && textLower.includes(l.Artist.toLowerCase()))
+        );
+
+        if (found) {
+            // Wir speichern die ID zwischen, warten aber auf ein "Ja"
+            activeSession.set(chatId, { 
+                step: "confirm_recall", 
+                pendingPageId: found.id, 
+                artist: found.Artist, 
+                title: found.Titel 
+            });
+            return `Ich habe eine bestehende Labelcopy gefunden: **${found.Artist} - ${found.Titel}**. \n\nMöchtest du an dieser weiterarbeiten? (Ja/Nein)`;
+        } else {
+            return "Ich konnte keine passende Labelcopy zum Laden finden. Möchtest du eine neue anlegen?";
+        }
+  }
+
+  // Bestätigung für das Laden
+  if (session && session.step === "confirm_recall") {
+      if (textLower.includes("ja") || textLower.includes("yes") || textLower.includes("gerne")) {
+          activeSession.set(chatId, { 
+              step: "active", 
+              pageId: session.pendingPageId, 
+              artist: session.artist, 
+              title: session.title 
+          });
+          return await showFullMask(chatId, session.pendingPageId);
+      } else {
+          activeSession.delete(chatId);
+          return "Ok, ich habe die Suche abgebrochen. Was kann ich sonst für dich tun?";
+      }
+  }
+    
   if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
       activeSession.set(chatId, { step: "awaiting_artist" });
       return "Alles klar! Welcher **Künstler** soll es sein?";
