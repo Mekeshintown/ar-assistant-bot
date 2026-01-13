@@ -626,14 +626,14 @@ bot.on("voice", async (msg) => {
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         const answer = await handleChat(chatId, transcription.text);
         await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
-      } catch (transErr) {
-        console.error("Transcription Error:", transErr);
+      } catch (tErr) {
+        console.error("Transcription Error:", tErr);
         await bot.sendMessage(chatId, "Fehler bei der Transkription.");
       }
     });
   } catch (err) {
     console.error("Voice Error:", err);
-    await bot.sendMessage(chatId, "Fehler beim Audio-Download.");
+    await bot.sendMessage(chatId, "Fehler beim Audio.");
   }
 });
 
@@ -645,5 +645,5 @@ app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
 app.listen(PORT, async () => {
   await bot.deleteWebHook({ drop_pending_updates: true });
   await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
-  console.log("Bot läuft und hört auf Notion, Airtable & Kalender.");
+  console.log("Bot läuft.");
 });
