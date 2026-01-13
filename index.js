@@ -626,20 +626,20 @@ bot.on("voice", async (msg) => {
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         const answer = await handleChat(chatId, transcription.text);
         await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
-      } catch (innerErr) {
-        console.error("Transcription Error:", innerErr);
+      } catch (transErr) {
+        console.error("Transcription Error:", transErr);
         await bot.sendMessage(chatId, "Fehler bei der Transkription.");
       }
     });
-  } catch (err) { 
+  } catch (err) {
     console.error("Voice Error:", err);
-    await bot.sendMessage(chatId, "Fehler beim Audio."); 
+    await bot.sendMessage(chatId, "Fehler beim Audio-Download.");
   }
 });
 
-app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { 
-  bot.processUpdate(req.body); 
-  res.sendStatus(200); 
+app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
 
 app.listen(PORT, async () => {
