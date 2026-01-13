@@ -46,6 +46,7 @@ const chatContext = new Map();
 const pendingCalendar = new Map(); // Für die Sicherheits-Schleife
 const pendingAirtable = new Map(); // Für die Airtable-Bestätigung
 const lastSessionData = new Map(); // Für das Session-Gedächtnis
+const activeSession = new Map();
 const app = express();
 app.use(express.json());
 
