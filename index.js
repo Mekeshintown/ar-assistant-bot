@@ -304,9 +304,8 @@ const renderMenu = (pendingData) => {
   }
 
 // --- LABELCOPY SESSION MODUS ---
-  let session = activeSession.get(chatId);
-  const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc";
-
+ session = activeSession.get(chatId);
+    
   if (session && (textLower === "fertig" || textLower === "session löschen")) {
       activeSession.delete(chatId);
       return "Check. Labelcopy-Session geschlossen.";
