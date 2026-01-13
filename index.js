@@ -125,21 +125,27 @@ const renderMenu = (pendingData) => {
   
   
 // --- 1. SICHERHEITS-LOOP & MENÜ-MODUS ---
+  
   // A) AIRTABLE BESTÄTIGUNG
   if (pendingAirtable.has(chatId)) {
       const pending = pendingAirtable.get(chatId);
       if (textLower === "ja" || textLower === "ok") {
           try {
+              // Erstellt den Eintrag in der extrahierten Tabelle (Artist Pitch oder Label Pitch)
               await airtableBase(pending.table).create([{ fields: pending.fields }]);
               pendingAirtable.delete(chatId);
               return `✅ Erfolgreich in **${pending.table}** gespeichert!`;
-          } catch (e) { return "❌ Airtable Fehler: " + e.message; }
+          } catch (e) { 
+              console.error("Airtable Error:", e.message);
+              return "❌ Airtable Fehler: " + e.message; 
+          }
       } else if (textLower === "nein" || textLower === "abbruch") {
           pendingAirtable.delete(chatId);
           return "Speichern abgebrochen.";
       }
+      // Falls der User während eines offenen Entwurfs etwas anderes schreibt, lassen wir den Loop offen
   }
-
+  
   // B) KALENDER BESTÄTIGUNG (Dein bestehender Code)
   if (pendingCalendar.has(chatId)) {
       const pendingData = pendingCalendar.get(chatId);
@@ -392,7 +398,7 @@ const renderMenu = (pendingData) => {
       return renderMenu(pendingData);
   }
 
-// --- 3. AIRTABLE LOGIK (NEU MIT BESTÄTIGUNG) ---
+// --- 3. AIRTABLE LOGIK (PRÄZISE EXTRAKTION) ---
 const airtableTriggers = ["speichere", "adden", "adde", "hinzufügen", "eintragen", "airtable"];
 if (airtableTriggers.some(word => textLower.includes(word)) && !textLower.includes("termin") && !textLower.includes("kalender")) {
     try {
@@ -402,11 +408,19 @@ if (airtableTriggers.some(word => textLower.includes(word)) && !textLower.includ
                 { 
                     role: "system", 
                     content: `Du bist ein Daten-Extraktor für Airtable.
-                    Tabellen & Felder (basierend auf Screenshots):
+                    
+                    WICHTIGE UNTERSCHEIDUNG:
+                    - Artist_Name: Der Name des Musikers/Künstlers (z.B. Eli Brown).
+                    - Contact_FirstName / Contact_LastName: Der Name des Managers oder Ansprechpartners (z.B. Matt Verovkins).
+                    
+                    Tabellen & Felder:
                     1. "Artist Pitch": Artist_Name, Contact_FirstName, Contact_LastName, Email, Genre, Prio.
                     2. "Label Pitch": Label_Name, Contact_FirstName, Contact_LastName, Email, Type, Prio.
                     
-                    Entscheide welche Tabelle passt. Gib NUR JSON zurück: {"table": "...", "fields": {...}}` 
+                    Regeln:
+                    - Trenne Namen wie "Matt Verovkins" immer in Vor- und Nachname auf.
+                    - Wenn ein Musiker genannt wird, ist das der Artist_Name.
+                    Gib NUR JSON zurück: {"table": "...", "fields": {...}}` 
                 },
                 { role: "user", content: text }
             ],
@@ -417,11 +431,20 @@ if (airtableTriggers.some(word => textLower.includes(word)) && !textLower.includ
         pendingAirtable.set(chatId, result);
 
         let summary = `📋 **Airtable-Entwurf (${result.table})**\n\n`;
-        for (const [key, val] of Object.entries(result.fields)) {
-            summary += `**${key}:** ${val}\n`;
-        }
+        // Wir zeigen die Felder schön sortiert an
+        if (result.fields.Artist_Name) summary += `**Artist:** ${result.fields.Artist_Name}\n`;
+        if (result.fields.Label_Name) summary += `**Label:** ${result.fields.Label_Name}\n`;
+        summary += `**Kontakt:** ${result.fields.Contact_FirstName || ""} ${result.fields.Contact_LastName || ""}\n`;
+        if (result.fields.Email) summary += `**Email:** ${result.fields.Email}\n`;
+        if (result.fields.Genre) summary += `**Genre:** ${result.fields.Genre}\n`;
+        if (result.fields.Prio) summary += `**Prio:** ${result.fields.Prio}\n`;
+        if (result.fields.Type) summary += `**Type:** ${result.fields.Type}\n`;
+
         return summary + `\n✅ **Ja** zum Speichern\n❌ **Abbruch**`;
-    } catch (e) { return "❌ Fehler bei der Airtable-Extraktion."; }
+    } catch (e) { 
+        console.error("Airtable Extraktion Error:", e);
+        return "❌ Fehler bei der Airtable-Extraktion."; 
+    }
 }
 
 // --- 4. KALENDER LOGIK (ALLGEMEIN) ---
