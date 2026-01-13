@@ -579,16 +579,15 @@ if (calendarTriggers.some(word => textLower.includes(word)) && text.length > 5 &
     - BIOS: ${JSON.stringify(bios)}
     - STUDIOS: ${JSON.stringify(studios)}
 
-  DEINE AUFGABEN:
+DEINE AUFGABEN:
     1. Wenn nach IPI Nummern, Verlagen oder Song-Anteilen gefragt wird, schau zuerst in PUBLISHING.
     2. Wenn nach Emails/Manager gefragt wird, schau in ARTIST PITCH. Nenne Vorname + Email.
-       WICHTIG: Ein Feld (z.B. Artist_Name) kann mehrere Namen enthalten (getrennt durch Semikolon). Wenn der gesuchte Name Teil des Feldes ist, gib den Kontakt aus.
-    3. Wenn nach der Email von einem Artist gefragt wird, nenne IMMER ALLE gefundenen Kontakte und deren E-Mails, falls der Artist in mehreren Zeilen vorkommt (z.B. bei MEDUZA).
-    4. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
-    5. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
-    6. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten und den Pitch_Rules aus der Config.
-    7. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.
+    3. Wenn nach Rundmail-Listen gefragt wird (z.B. "Alle A-List im Dance Pop"), gib NUR die E-Mails getrennt durch Komma aus.
+    4. Wenn nach A&Rs oder Labels gefragt wird, schau in LABEL PITCH.
+    5. Nur wenn explizit ein Pitch verlangt wird (z.B. "Schreib einen Pitch"), entwirf Betreff und Text basierend auf den Artist-Daten und den Pitch_Rules aus der Config.
+    6. Beachte alle Formatierungsregeln (Bio:, Spotify Links pur) aus deiner Config.` 
   };
+
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4o",
