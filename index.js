@@ -102,8 +102,26 @@ function buildNotionProps(data) {
     if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
     
     fields.forEach(f => { 
-        const val = data[f] || data[f.toLowerCase()];
+        let val = data[f] || data[f.toLowerCase()];
+        
         if (val !== undefined && val !== null) {
+            // Wenn der Wert ein Array (Liste) ist, fügen wir die Elemente mit Zeilenumbruch zusammen
+            if (Array.isArray(val)) {
+                val = val.map(item => {
+                    if (typeof item === 'object') {
+                        // Falls die KI Objekte für Splits schickt (Name, %, IPI)
+                        return Object.entries(item)
+                            .map(([key, value]) => `${value}`)
+                            .join(", ");
+                    }
+                    return item;
+                }).join("\n"); // Hier passiert das "untereinander schreiben"
+            } 
+            // Falls es ein einzelnes Objekt ist (keine Liste), auch in Text wandeln
+            else if (typeof val === 'object') {
+                val = Object.entries(val).map(([k, v]) => `${v}`).join("\n");
+            }
+
             props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
         }
     });
