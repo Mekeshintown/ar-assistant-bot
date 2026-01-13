@@ -7,7 +7,10 @@ const OpenAI = require("openai");
 const axios = require("axios");
 const fs = require("fs");
 const Airtable = require("airtable");
-const { google } = require("googleapis"); // NEU hinzugefügt
+const { google } = require("googleapis"); 
+
+// DIESE ZEILE HIER IST NEU UND WICHTIG FÜR DIE LABELCOPY:
+const { Document, Packer, Paragraph, Table, TableRow, TableCell, WidthType, TextRun } = require("docx");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; 
@@ -84,13 +87,73 @@ async function fetchAirtableData(tableName) {
 
 // --- CORE LOGIK ---
 
+// --- LC HELPER: Baut die Notion-Datenstruktur ---
+function buildNotionProps(data) {
+    const props = {};
+    const fields = ["Artist", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+    
+    if (data.Titel) props["Titel"] = { title: [{ text: { content: String(data.Titel) } }] };
+    
+    fields.forEach(f => { 
+        const val = data[f] || data[f.toLowerCase()];
+        if (val !== undefined && val !== null) {
+            props[f] = { rich_text: [{ text: { content: String(val) } }] }; 
+        }
+    });
+    return props;
+}
+
+// --- LC HELPER: Zeigt die Maske in Telegram ---
+async function showFullMask(chatId, pageId) {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const props = parseProperties(page.properties);
+    const fields = ["Artist", "Titel", "Version", "Genre", "Time", "Recording Country", "Written by", "Published by", "Produced by", "Mastered by", "Mixed by", "Vocals by", "Programming by", "Bass by", "Drums by", "Keys by", "Synth by", "Splits", "Lyrics"];
+    
+    let msg = `📋 **Labelcopy: ${props.Artist || "..." } - ${props.Titel || "..."}**\n`;
+    msg += `----------------------------------\n`;
+    fields.forEach(f => {
+        const val = props[f] || "";
+        msg += val.trim() !== "" ? `✅ **${f}:** ${val}\n` : `❌ **${f}:** _noch leer_\n`;
+    });
+    msg += `----------------------------------\n`;
+    msg += `👉 *Infos einfach hier reinschreiben.* \n`;
+    msg += `👉 *Sagen Sie **"Exportieren"**, um das Word-File zu erhalten.*\n`;
+    msg += `👉 *Sagen Sie **"Fertig"**, um die Session zu schließen.*`;
+    return msg;
+}
+
+// --- LC HELPER: Erstellt das Word-Dokument ---
+async function generateWordDoc(chatId, pageId) {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const lc = parseProperties(page.properties);
+    const doc = new Document({
+        sections: [{
+            children: [
+                new Paragraph({ children: [new TextRun({ text: "Labelcopy", bold: true, size: 36 })], spacing: { after: 400 } }),
+                ...["Artist", "Titel", "Version", "Genre", "Time", "Written by", "Published by", "Produced by", "Mastered by", "Recording Country"].map(f => 
+                    new Paragraph({ children: [new TextRun({ text: `${f}: `, bold: true }), new TextRun(lc[f] || "")] })
+                )
+            ]
+        }]
+    });
+    const fileName = `LC_${lc.Artist || "Unbekannt"}_${lc.Titel || "Song"}.docx`.replace(/\s/g, "_");
+    const buffer = await Packer.toBuffer(doc);
+    fs.writeFileSync(fileName, buffer);
+    await bot.sendDocument(chatId, fileName);
+    fs.unlinkSync(fileName);
+    return "Hier ist dein Word-Dokument! 📄 Session beendet.";
+}
+
+
 async function handleChat(chatId, text) {
   const fetchSafely = async (id) => {
     try { return await fetchFullDatabase(id); } catch (e) { return []; }
   };
   
 const textLower = text.toLowerCase();
-
+const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc"; // Stelle sicher, dass die ID stimmt
+let session = activeSession.get(chatId);
+  
   // --- UNIVERSAL HELPER: MENÜ TEXT GENERIEREN ---
 const renderMenu = (pendingData) => {
       const evt = pendingData.event;
@@ -239,6 +302,53 @@ const renderMenu = (pendingData) => {
       }
   }
 
+  // --- LABELCOPY SESSION MODUS ---
+  let session = activeSession.get(chatId);
+  const DB_LABELCOPIES = "2e4c841ccef980d9ac9bf039d92565cc";
+
+  if (session && (textLower === "fertig" || textLower === "session löschen")) {
+      activeSession.delete(chatId);
+      return "Check. Labelcopy-Session geschlossen.";
+  }
+
+  if (textLower.includes("labelcopy anlegen") || textLower.includes("lc anlegen")) {
+      activeSession.set(chatId, { step: "awaiting_artist" });
+      return "Alles klar! Welcher **Künstler** soll es sein?";
+  }
+
+  if (session) {
+      if (session.step === "awaiting_artist") {
+          session.artist = text; session.step = "awaiting_title";
+          activeSession.set(chatId, session);
+          return `Notiert: **${text}**. Wie lautet der **Titel** des Songs?`;
+      }
+      if (session.step === "awaiting_title") {
+          session.title = text; session.step = "active";
+          const newPage = await notion.pages.create({ 
+              parent: { database_id: DB_LABELCOPIES }, 
+              properties: buildNotionProps({ Artist: session.artist, Titel: session.title }) 
+          });
+          session.pageId = newPage.id;
+          activeSession.set(chatId, session);
+          return await showFullMask(chatId, newPage.id);
+      }
+      if (textLower.includes("exportieren")) {
+           const res = await generateWordDoc(chatId, session.pageId);
+           activeSession.delete(chatId); 
+           return res;
+      }
+      
+      const extraction = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [{ role: "system", content: "Extrahiere Labelcopy-Infos. Gib NUR JSON." }, { role: "user", content: text }],
+          response_format: { type: "json_object" }
+      });
+      const updateData = JSON.parse(extraction.choices[0].message.content);
+      if (Object.keys(updateData).length > 0) {
+          await notion.pages.update({ page_id: session.pageId, properties: buildNotionProps(updateData) });
+          return await showFullMask(chatId, session.pageId);
+      }
+  }
   
   // Laden aller Daten
   const [config, studios, bios, artistInfos, artistPitch, labelPitch, publishing, calendarList] = await Promise.all([
