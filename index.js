@@ -408,26 +408,30 @@ const renderMenu = (pendingData) => {
            return res;
       }
       
-      // 4. LAUFENDE UPDATES (Hier machen wir ihn flexibel!)
-      const configs = await fetchFullDatabase(DB_CONFIG);
-      const lcRules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
+   // 4. LAUFENDE UPDATES (Flexibilität aus Config laden)
+const configs = await fetchFullDatabase(DB_CONFIG);
+const lcRules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
 
-      const extraction = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-              { 
-                role: "system", 
-                content: `Extrahiere Labelcopy-Daten. 
-                REGELN: ${lcRules}
-                FLEXIBILITÄT: Der User schreibt natürlich. "Mastering von XY" -> Mastered by: XY. "Mix macht XY" -> Mixed by: XY. 
-                Du brauchst KEINE Doppelpunkte. 
-                Wichtig: Wenn der User Splits nennt (z.B. 50/50), trage sie exakt so unter 'Splits' ein.
-                Gib NUR JSON zurück.` 
-              }, 
-              { role: "user", content: text }
-          ],
-          response_format: { type: "json_object" }
-      });
+const extraction = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+        { 
+          role: "system", 
+          content: `Du bist ein extrem flexibler A&R-Assistent. 
+          ### DEINE REGELN AUS DER CONFIG: ###
+          ${lcRules}
+
+          ### ARBEITSWEISE: ###
+          - Sei NICHT streng. 
+          - Wenn der User Sätze schreibt wie "Der Mix ist von XY" oder "XY hat die Vocals gemacht", ordne das sofort 'Mixed by' oder 'Vocals by' zu.
+          - Ignoriere fehlende Doppelpunkte oder unsaubere Formatierung.
+          - Wenn Infos vage sind, versuche die beste Zuordnung zu finden.
+          Gib NUR JSON zurück.` 
+        }, 
+        { role: "user", content: text }
+    ],
+    response_format: { type: "json_object" }
+});
 
       const updateData = JSON.parse(extraction.choices[0].message.content);
       if (Object.keys(updateData).length > 0) {
