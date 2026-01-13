@@ -618,16 +618,21 @@ bot.on("voice", async (msg) => {
     const writer = fs.createWriteStream(tempPath);
     response.data.pipe(writer);
     writer.on("finish", async () => {
-      const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(tempPath),
-        model: "whisper-1",
-      });
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-      const answer = await handleChat(chatId, transcription.text);
-      await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
+      try {
+        const transcription = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(tempPath),
+          model: "whisper-1",
+        });
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        const answer = await handleChat(chatId, transcription.text);
+        await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
+      } catch (innerErr) {
+        console.error("Transcription Error:", innerErr);
+        await bot.sendMessage(chatId, "Fehler bei der Transkription.");
+      }
     });
   } catch (err) { 
-    console.error(err);
+    console.error("Voice Error:", err);
     await bot.sendMessage(chatId, "Fehler beim Audio."); 
   }
 });
