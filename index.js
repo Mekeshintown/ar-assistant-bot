@@ -427,8 +427,12 @@ if (airtableTriggers.some(word => textLower.includes(word)) && !textLower.includ
             response_format: { type: "json_object" }
         });
 
-        const result = JSON.parse(extraction.choices[0].message.content);
-        pendingAirtable.set(chatId, result);
+      const result = JSON.parse(extraction.choices[0].message.content);
+
+// FIX: Wandelt Genre-Strings in Listen um, damit Airtable sie akzeptiert
+    if (result.fields.Genre && typeof result.fields.Genre === "string") {
+    result.fields.Genre = result.fields.Genre.split(',').map(g => g.trim());
+}
 
         let summary = `📋 **Airtable-Entwurf (${result.table})**\n\n`;
         // Wir zeigen die Felder schön sortiert an
@@ -606,28 +610,35 @@ bot.on("message", async (msg) => {
 });
 
 bot.on("voice", async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const fileLink = await bot.getFileLink(msg.voice.file_id);
-    const response = await axios({ url: fileLink, responseType: "stream" });
-    const tempPath = `./${msg.voice.file_id}.ogg`;
-    const writer = fs.createWriteStream(tempPath);
-    response.data.pipe(writer);
-    writer.on("finish", async () => {
-      const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(tempPath),
-        model: "whisper-1",
-      });
-      fs.unlinkSync(tempPath);
-      const answer = await handleChat(chatId, transcription.text);
-      await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
-    });
-  } catch (err) { await bot.sendMessage(chatId, "Fehler beim Audio."); }
+  const chatId = msg.chat.id;
+  try {
+    const fileLink = await bot.getFileLink(msg.voice.file_id);
+    const response = await axios({ url: fileLink, responseType: "stream" });
+    const tempPath = `./${msg.voice.file_id}.ogg`;
+    const writer = fs.createWriteStream(tempPath);
+    response.data.pipe(writer);
+    writer.on("finish", async () => {
+      const transcription = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(tempPath),
+        model: "whisper-1",
+      });
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      const answer = await handleChat(chatId, transcription.text);
+      await bot.sendMessage(chatId, `📝 *Transkript:* _${transcription.text}_\n\n${answer}`, { parse_mode: "Markdown" });
+    });
+  } catch (err) { 
+    console.error(err);
+    await bot.sendMessage(chatId, "Fehler beim Audio."); 
+  }
 });
 
-app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { bot.processUpdate(req.body); res.sendStatus(200); });
+app.post(`/telegram/${TELEGRAM_BOT_TOKEN}`, (req, res) => { 
+  bot.processUpdate(req.body); 
+  res.sendStatus(200); 
+});
+
 app.listen(PORT, async () => {
-  await bot.deleteWebHook({ drop_pending_updates: true });
-  await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
-  console.log("Bot läuft und hört auf Notion, Airtable & Kalender.");
+  await bot.deleteWebHook({ drop_pending_updates: true });
+  await bot.setWebHook(`${WEBHOOK_URL}/telegram/${TELEGRAM_BOT_TOKEN}`);
+  console.log("Bot läuft und hört auf Notion, Airtable & Kalender.");
 });
