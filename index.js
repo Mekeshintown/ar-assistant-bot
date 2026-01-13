@@ -324,6 +324,25 @@ const renderMenu = (pendingData) => {
       }
       if (session.step === "awaiting_title") {
           session.title = text; session.step = "active";
+// Holt die spezifischen Regeln aus der Config-Datenbank
+    const configs = await fetchFullDatabase(DB_CONFIG);
+    const lcRules = configs.find(c => c.Aufgabe === "Labelcopy Rules")?.Anweisung || "";
+    
+const extraction = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+        { 
+            role: "system", 
+            content: `Du bist ein Assistent für Musik-Metadaten. 
+            Extrahiere Infos für die Felder: Artist, Version, Genre, Time, Recording Country, Written by, Published by, Produced by, Mastered by, Mixed by, Vocals by, Programming by, Bass by, Drums by, Keys by, Synth by, Splits, Lyrics.
+            SEI FLEXIBEL: Wenn der User schreibt "Mastering hat XY gemacht" oder "Mix von XY", ordne es 'Mastered by' oder 'Mixed by' zu. Du brauchst keinen Doppelpunkt.
+            Gib NUR JSON zurück.` 
+        }, 
+        { role: "user", content: text }
+    ],
+    response_format: { type: "json_object" }
+});
+          
           const newPage = await notion.pages.create({ 
               parent: { database_id: DB_LABELCOPIES }, 
               properties: buildNotionProps({ Artist: session.artist, Titel: session.title }) 
